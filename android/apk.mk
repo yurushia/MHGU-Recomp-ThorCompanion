@@ -16,6 +16,11 @@ TARGET_API  := $(patsubst android-%,%,$(notdir $(patsubst %/,%,$(dir $(ANDROID_J
 ADB         := $(ANDROID_SDK)/platform-tools/adb
 APK         := $(B)/mhgurecomp.apk
 APK_O       := obj-android/apk
+# The installed app's id: this fork's own, so it installs beside the original app (io.github.morerokk.mhgurecomp) and
+# never over it. The Java classes keep their package (the manifest's): only the id is renamed when the APK is linked.
+# The same id is in AndroidManifest.xml (the log provider's authority), res/xml/shortcuts.xml, LogProvider.java and
+# runtime/main.c (the folder named in the "no game files" message).
+APP_ID      := io.github.yurushia.mhgurecomp.thor
 JAVA_SRC    := $(SDL3_DIR)/src/android-project/app/src/main/java/org/libsdl/app
 APP_JAVA    := $(wildcard android/java/io/github/morerokk/mhgurecomp/*.java)  # (the app's own: the import)
 APP_RES     := $(wildcard android/res/*/*)  # (the Android TV home screen's banner, the launcher icon)
@@ -50,7 +55,7 @@ rm -rf $(APK_O)/assets && mkdir -p $(APK_O)/assets/bonus && cp extras/pipelines.
     cp -r $(B)/licenses $(APK_O)/assets/ && cp -r android/assets/. $(APK_O)/assets/ $(if $(BONUS),&& cp "$(BONUS)" $(APK_O)/assets/bonus/system)
 "$(BUILD_TOOLS)/aapt2" compile --dir android/res -o $(APK_O)/res.zip
 "$(BUILD_TOOLS)/aapt2" link -o $(APK_O)/base.apk --manifest android/AndroidManifest.xml -I "$(call win_path,$(ANDROID_JAR))" \
-    -A $(APK_O)/assets $(APK_O)/res.zip --min-sdk-version $(API) --target-sdk-version $(TARGET_API) \
+    -A $(APK_O)/assets $(APK_O)/res.zip --rename-manifest-package $(APP_ID) --min-sdk-version $(API) --target-sdk-version $(TARGET_API) \
     --version-code $(APK_VERSION_CODE) --version-name $(VERSION)
 rm -rf $(APK_O)/lib && for a in $(2); do mkdir -p $(APK_O)/lib/$$a; \
     for f in $(B)/lib/$$a/*.so; do "$(LLVM)/llvm-strip" --strip-debug -o $(APK_O)/lib/$$a/$$(basename $$f) $$f || exit 1; done; done

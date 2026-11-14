@@ -10,6 +10,10 @@ pressed.
 (The picture is `CompanionView.java` itself drawing sample values on a PC, through stand-ins for Android's drawing
 classes: the layout is the real one, the fonts' rendering and the glow are only close. Not a capture from a device.)
 
+This fork's APK has its own app id, `io.github.yurushia.mhgurecomp.thor` ("MHGU Recomp Thor"), so it installs beside the
+original app; its folder is `Android/data/io.github.yurushia.mhgurecomp.thor/files/` (where the README says
+`Android/data/io.github.morerokk.mhgurecomp/files/`).
+
 **Status: not tested on a device or in a running game.** The C side passes a syntax check and the Java side compiles
 against android-35; the offsets are from reading the game's code (main 1.4.0) and the port's notes.
 

@@ -29,7 +29,7 @@ const char *g_game_dir = "game";  // folder holding exefs/ and romfs/ (the playe
 
 // where the player puts the game files, for the messages below
 #ifdef __ANDROID__
-#define DATA_FOLDER "Android/data/io.github.morerokk.mhgurecomp/files/data on this device"
+#define DATA_FOLDER "Android/data/io.github.yurushia.mhgurecomp.thor/files/data on this device"
 #define DATA_SUB(s) "data/" s
 #else
 #define DATA_FOLDER "the data folder next to mhgurecomp.exe"

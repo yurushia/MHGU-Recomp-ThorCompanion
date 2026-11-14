@@ -24,7 +24,7 @@
     <!-- Settings > Android > Save folder: a folder outside the app's own (for syncing the save), only when chosen -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
-    <application android:label="MHGU Recomp"
+    <application android:label="MHGU Recomp Thor"
         android:icon="@mipmap/ic_launcher"
         android:banner="@drawable/banner"
         android:allowBackup="false"
@@ -37,7 +37,7 @@
         android:hardwareAccelerated="true">
 
         <activity android:name="io.github.morerokk.mhgurecomp.MHGUActivity"
-            android:label="MHGU Recomp"
+            android:label="MHGU Recomp Thor"
             android:screenOrientation="sensorLandscape"
             android:alwaysRetainTaskState="true"
             android:launchMode="singleInstance"
@@ -62,7 +62,7 @@
             android:excludeFromRecents="true"
             android:exported="true" />
         <provider android:name="io.github.morerokk.mhgurecomp.LogProvider"
-            android:authorities="io.github.morerokk.mhgurecomp.logs"
+            android:authorities="io.github.yurushia.mhgurecomp.thor.logs"
             android:process=":log"
             android:exported="false"
             android:grantUriPermissions="true" />
