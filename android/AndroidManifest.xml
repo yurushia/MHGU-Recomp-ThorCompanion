@@ -23,6 +23,8 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!-- Settings > Android > Save folder: a folder outside the app's own (for syncing the save), only when chosen -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- Settings > Android > Update now (android/java: Updater.java): installs the newer APK over this app -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application android:label="MHGU Recomp Thor"
         android:icon="@mipmap/ic_launcher"
@@ -66,6 +68,8 @@
             android:process=":log"
             android:exported="false"
             android:grantUriPermissions="true" />
+        <!-- what Android's installer says about an update (Updater.java commits the session with this receiver's address) -->
+        <receiver android:name="io.github.morerokk.mhgurecomp.UpdateReceiver" android:exported="false" />
         <!-- the game files / save import (android/java: ImportActivity.java): see through, its dialogs over the game -->
         <activity android:name="io.github.morerokk.mhgurecomp.ImportActivity"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"

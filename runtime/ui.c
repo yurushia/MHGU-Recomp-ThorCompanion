@@ -20,6 +20,7 @@ void ui_capture_launch_args(int argc, char **argv) { launch_argc = argc; launch_
 void ui_request_action(bool restart) { SDL_SetAtomicInt(&requested_action, restart ? 2 : 1); }
 void ui_request_exit_menu(void) { SDL_SetAtomicInt(&requested_action, 12); }  // (B on the title screen's Main Menu)
 void ui_request_import(int what) { SDL_SetAtomicInt(&requested_action, 2 + what); }
+void ui_request_update(void) { SDL_SetAtomicInt(&requested_action, 13); }  // (Android: Updater.java, through android_import kind 10)
 static SDL_AtomicInt away;
 bool ui_window_away(void) { return SDL_GetAtomicInt(&away) != 0; }
 #ifdef __ANDROID__
@@ -330,6 +331,11 @@ int ui_run(void) {
             // (after 1 and 2 the app closes, the game has the old files open; the others leave it running)
             // (and after 8 / 9, the files folder changed: the game has the old one's files open)
             if (android_import(action - 2, true) && (action <= 4 || action >= 10)) { LOG("[ui] imported: closing\n"); exit(0); }
+            SDL_SetAtomicInt(&away, 0);
+        }
+        if (action == 13) {  // (Update now: Java's dialogs; no exit here, Android closes the app itself when the update goes in)
+            SDL_SetAtomicInt(&away, 1);
+            android_import(10, true);
             SDL_SetAtomicInt(&away, 0);
         }
 #else

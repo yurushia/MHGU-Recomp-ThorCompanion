@@ -94,6 +94,10 @@ notes say for every weapon (the notes checked a Hammer), and that the second scr
 | `tests/test_companion.c` | `make test-companion` (Linux or WSL): the timer, and the one-tap use against made-up game memory and a small model of the hunter (a move only while idle, a count that drops early, late or never, a weapon flag that flips at the start or the end of the move, a game that takes no Y) |
 | `tests/companion-view/` | `make test-companion-view` (a JDK is all it needs): `CompanionView.java` drawn on a PC and driven with touches (tap, jittery tap, swipe, short swipe, fling, vertical drag, taps outside the pouch, the arrows, partial pages, scaling, the map's zoom), and `AreaMap.java` reading a made-up game folder; writes the pictures to `obj/companion-view/` |
 
+## Updating
+
+Settings > Android > **Update now** downloads and installs the newest release of this fork over the installed app, keeping its files and saves: see [UPDATES.md](UPDATES.md).
+
 ## Notes
 
 * **The quest timer**: the game's field `sQuest +0x1c` holds the updates **left** (it counts down); the time left is that

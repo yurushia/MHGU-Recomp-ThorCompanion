@@ -8,6 +8,7 @@
 #   make PLATFORM=android dist VERSION=0.13.0   the release: dist/Android-MHGURecomp.<version>.apk, arm64-v8a only,
 #                                                 signed with the release key (on Windows, make dist does this too)
 #   make PLATFORM=android release-key           that key, once ever (below)
+#   make PLATFORM=android ABI=arm64-v8a thor-release   the APK the app's Update now button downloads (below)
 # The assets are what a PC release has beside the exe: pipelines.list, licenses/ and bonus/system (BONUS), which the
 # app copies into its folder (runtime/platform/android.c), and android/assets (the companion panel's fonts).
 BUILD_TOOLS := $(lastword $(sort $(wildcard $(ANDROID_SDK)/build-tools/*)))
@@ -105,4 +106,15 @@ dist: $(APK_DEPS) $(RELEASE_KEY)
 install: $(APK)
 	"$(ADB)" install -r $(APK)
 
-.PHONY: apk install release-key
+# The release the app's Update now button finds (docs/UPDATES.md): dist/MHGURecomp-Thor-<versionCode>.apk, arm64-v8a, signed with the
+# key the installed app was signed with. THOR_KEY=release (the default: the release key, android/apk.mk's release-key) or
+# THOR_KEY=debug (the SDK's debug key, which the plain `make apk` signs with: use it if the app on the device came from that).
+THOR_APK = $(DIST)/MHGURecomp-Thor-$(APK_VERSION_CODE).apk
+THOR_KEY ?= release
+thor-release: $(APK_DEPS) $(if $(filter debug,$(THOR_KEY)),$(DEBUG_KEY),$(RELEASE_KEY))
+	@test "$(ABI)" = arm64-v8a || { echo "thor-release: the Thor is arm64-v8a: ABI=arm64-v8a"; exit 1; }
+	$(call pack_apk,$(THOR_APK),arm64-v8a,$(if $(filter debug,$(THOR_KEY)),$(DEBUG_SIGN),$(RELEASE_SIGN)))
+	@echo "thor-release: $(THOR_APK) (build $(APK_VERSION_CODE), signed with the $(THOR_KEY) key)"
+	@echo "  publish it:  gh release create build-$(APK_VERSION_CODE) $(THOR_APK) --repo yurushia/MHGU-Recomp-ThorCompanion --title 'Build $(APK_VERSION_CODE)' --notes '<what changed>' --latest"
+
+.PHONY: apk install release-key thor-release

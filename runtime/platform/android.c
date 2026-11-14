@@ -182,7 +182,8 @@ void android_config_loaded(void) {
 // The system's file picker and the copy are Java's (android/java: ImportActivity.java), which has its own dialogs;
 // this waits until it is done. 1: game files (into the data folder), 2: a save (into save/save_0), 3: the save out to a
 // folder, 5 / 6: a mod (zip / folder) into the mods folder, 4 / 7: choose the folder to keep the save in / the folder
-// holding the game files (its path: android_take_picked). running: the game has started (the app closes after 1 and 2).
+// holding the game files (its path: android_take_picked), 10: the Update now button (Updater.java: looks for a newer APK
+// and installs it; Android closes the app when it goes in). running: the game has started (the app closes after 1 and 2).
 // true when it was done.
 
 static const char *absolute(const char *dir, char *buf, size_t size) {
@@ -245,6 +246,7 @@ bool android_import(int what, bool running) {
     if (what == 1) snprintf(folder, sizeof folder, "%s", android_path("data"));  // (the files folder's, whatever the settings point at: see below)
     else if (what == 5 || what == 6) snprintf(folder, sizeof folder, "%s", absolute(mods_dir(), buf, sizeof buf));
     else if (what == 8 || what == 9) snprintf(folder, sizeof folder, "%s", android_home());  // (copied from)
+    else if (what == 10) folder[0] = 0;  // (the update: no folder)
     else snprintf(folder, sizeof folder, "%s/save_0", absolute(getenv("MHGU_SAVE_DIR") ? getenv("MHGU_SAVE_DIR") : g_save_dir, buf, sizeof buf));
     JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
     jobject act = (jobject)SDL_GetAndroidActivity();
@@ -266,6 +268,7 @@ bool android_import(int what, bool running) {
         LOG("[android] %s: %s\n", what == 1 ? "importing the game files into" : what == 2 ? "importing a save into" :
             what == 3 ? "exporting the save from" : what == 7 ? "choosing the game files' folder, now" :
             what == 8 ? "choosing the files folder, now" : what == 9 ? "the app's own folder for its files again, now" :
+            what == 10 ? "looking for an update, now" :
             "choosing the save folder, now", folder);
         jstring dir = (*env)->NewStringUTF(env, folder);
         (*env)->CallStaticVoidMethod(env, c, begin, act, (jint)what, dir, (jboolean)running);

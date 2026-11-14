@@ -45,7 +45,8 @@ import java.util.Locale;
 import java.util.Map;
 
 public class ImportActivity extends Activity {
-    public static final int GAME = 1, SAVE = 2, EXPORT = 3, FOLDER = 4, MOD_ZIP = 5, MOD_FOLDER = 6, GAME_FOLDER = 7, FILES_FOLDER = 8, FILES_BACK = 9;
+    public static final int GAME = 1, SAVE = 2, EXPORT = 3, FOLDER = 4, MOD_ZIP = 5, MOD_FOLDER = 6, GAME_FOLDER = 7, FILES_FOLDER = 8, FILES_BACK = 9,
+        UPDATE = 10;  // (the "Update now" button: Updater.java, which has its own dialogs)
     public static final int RUNNING = 0, DONE = 1, CANCELLED = 2, FAILED = 3;
     static final long SAVE_SIZE = 0x4eb8bcL;  // (a save's system file: runtime/services/bonus.c)
     static final int PICK = 1, ALL_FILES = 2;
@@ -75,6 +76,7 @@ public class ImportActivity extends Activity {
 
     private volatile boolean stop;
     private AlertDialog progress;
+    private Updater updater;
 
     private AlertDialog.Builder dialog() {
         return new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert).setCancelable(false);
@@ -85,6 +87,11 @@ public class ImportActivity extends Activity {
         super.onCreate(saved);
         if (saved != null) { end(CANCELLED); return; }  // (made again by the system: its dialogs are gone)
         picked = "";
+        if (mode == UPDATE) {
+            updater = new Updater(this);
+            updater.start();
+            return;
+        }
         String text = mode == GAME
             ? "Pick the folder that holds your dump's exefs and romfs folders (for example in Download). "
               + "They are copied into the app, replacing the game files it has. This takes a few minutes."
@@ -160,6 +167,7 @@ public class ImportActivity extends Activity {
     @Override
     protected void onActivityResult(int request, int result, final Intent data) {
         super.onActivityResult(request, result, data);
+        if (updater != null && updater.onResult(request)) return;
         if (request == ALL_FILES) {  // back from Android's settings page for "All files access"
             if (allFiles()) finishFolder();
             else fail("Without \"All files access\" the app can't use that folder, so " + (mode == FOLDER ? "the save stays where it was." : "nothing was changed."));
@@ -225,7 +233,7 @@ public class ImportActivity extends Activity {
             .setPositiveButton("OK", on(DONE)).show();
     }
 
-    private void end(int how) {
+    void end(int how) {
         state = how;
         finish();
     }

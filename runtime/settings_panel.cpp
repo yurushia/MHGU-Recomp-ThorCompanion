@@ -2263,6 +2263,9 @@ std::vector<Row> main_rows() {
         break;
 #ifdef __ANDROID__
     case ANDROID_PAGE: {  // (Android/data can't be written by the player's file managers: the app copies files in and out)
+        header(r, "update.header", tr("App update"));
+        action(r, "update.now", tr("Update now"), []() { ui_request_update(); });
+        r.back().help = tr("Looks for a newer version of this app, and if there is one, downloads it and installs it over this one. Your game files, settings and saves are kept. Android may ask you to allow installing updates from this app, once, and to confirm the install. The app closes when the update goes in: save your game first, then start the app again.");
         header(r, "files.header", tr("App files"));
         const char *files = android_files_folder(), *problem = android_files_folder_problem();
         action(r, "files.folder", tr("Files folder"), []() { ui_request_import(8); });
