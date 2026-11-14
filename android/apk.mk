@@ -9,7 +9,7 @@
 #                                                 signed with the release key (on Windows, make dist does this too)
 #   make PLATFORM=android release-key           that key, once ever (below)
 # The assets are what a PC release has beside the exe: pipelines.list, licenses/ and bonus/system (BONUS), which the
-# app copies into its folder (runtime/platform/android.c).
+# app copies into its folder (runtime/platform/android.c), and android/assets (the companion panel's fonts).
 BUILD_TOOLS := $(lastword $(sort $(wildcard $(ANDROID_SDK)/build-tools/*)))
 ANDROID_JAR := $(lastword $(sort $(wildcard $(ANDROID_SDK)/platforms/android-*/android.jar)))
 TARGET_API  := $(patsubst android-%,%,$(notdir $(patsubst %/,%,$(dir $(ANDROID_JAR)))))
@@ -19,6 +19,7 @@ APK_O       := obj-android/apk
 JAVA_SRC    := $(SDL3_DIR)/src/android-project/app/src/main/java/org/libsdl/app
 APP_JAVA    := $(wildcard android/java/io/github/morerokk/mhgurecomp/*.java)  # (the app's own: the import)
 APP_RES     := $(wildcard android/res/*/*)  # (the Android TV home screen's banner, the launcher icon)
+APP_ASSETS  := $(wildcard android/assets/*/*)  # (the companion panel's fonts: android/java .../CompanionView.java)
 DEBUG_KEY   := $(HOME)/.android/debug.keystore
 # The release key: every release must be signed with the same one, or Android refuses it as an update, and players
 # would have to uninstall first (losing the app's folder: their game files and saves). Made once, by make release-key,
@@ -32,7 +33,7 @@ APK_VERSION_CODE := $(shell git rev-list --count HEAD 2>/dev/null || echo 1)
 # (the .bat tools of the SDK need the JDK, found through JAVA_HOME; on Linux and macOS they are shell scripts)
 BAT         := $(if $(wildcard $(BUILD_TOOLS)/d8.bat),.bat)
 SDK_ENV     := JAVA_HOME="$(call win_path,$(JDK))" PATH="$(JDK)/bin:$$PATH"
-APK_DEPS     = android/AndroidManifest.xml $(APP_RES) $(APK_O)/classes.dex $(EXE) $(if $(GEN_SRC),$(GAMELIB)) $(SDL_DEPS) \
+APK_DEPS     = android/AndroidManifest.xml $(APP_RES) $(APP_ASSETS) $(APK_O)/classes.dex $(EXE) $(if $(GEN_SRC),$(GAMELIB)) $(SDL_DEPS) \
                android/apk.py extras/pipelines.list $(LICENSE_TXT) $(BONUS)
 DEBUG_SIGN   = --ks "$(call win_path,$(DEBUG_KEY))" --ks-pass pass:android --key-pass pass:android
 # (no --key-pass: the keystore's; apksigner would read a second line of the same file for it. No v4 signature: it only
@@ -46,7 +47,7 @@ define pack_apk
 @mkdir -p $(B)/lib/$(ABI) $(APK_O) $(dir $(1))
 cp $(SDL_DEPS) $(B)/lib/$(ABI)/
 rm -rf $(APK_O)/assets && mkdir -p $(APK_O)/assets/bonus && cp extras/pipelines.list $(APK_O)/assets/ && \
-    cp -r $(B)/licenses $(APK_O)/assets/ $(if $(BONUS),&& cp "$(BONUS)" $(APK_O)/assets/bonus/system)
+    cp -r $(B)/licenses $(APK_O)/assets/ && cp -r android/assets/. $(APK_O)/assets/ $(if $(BONUS),&& cp "$(BONUS)" $(APK_O)/assets/bonus/system)
 "$(BUILD_TOOLS)/aapt2" compile --dir android/res -o $(APK_O)/res.zip
 "$(BUILD_TOOLS)/aapt2" link -o $(APK_O)/base.apk --manifest android/AndroidManifest.xml -I "$(call win_path,$(ANDROID_JAR))" \
     -A $(APK_O)/assets $(APK_O)/res.zip --min-sdk-version $(API) --target-sdk-version $(TARGET_API) \
