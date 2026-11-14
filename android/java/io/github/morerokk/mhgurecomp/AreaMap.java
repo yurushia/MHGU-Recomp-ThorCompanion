@@ -1,6 +1,7 @@
-// The shape of a quest area, for the companion panel's map (CompanionView): the area's ground (and water) collision, seen
+// The shape of a quest area, for the companion panel's map (CompanionView): the area's ground and wall collision, seen
 // from above, read from the player's own copy of the game: romfs/nativeNX/loc/arc/stage/map_com/m<stage>.arc holds, for
-// every area, "stage/m01d/m01a04d/collision/m01a04d-a-g00" (the ground) and "...-a-w00" (the water), in the same world
+// every area, "stage/m01d/m01a04d/collision/m01a04d-a-g00" (the ground) and "...-a-w00" (the walls: the faces that stand up,
+// cliffs and rocks; there is little in them that faces up, they are no water), in the same world
 // coordinates the hunter's and the monsters' positions are in (runtime/hle/companion.c). Nothing of the game is kept in the
 // app or the repository: the triangles are read from the player's files when an area is entered, and dropped with the app.
 //
@@ -24,6 +25,7 @@ import java.util.zip.DataFormatException;
 import java.util.zip.Inflater;
 
 final class AreaMap {
+    private static final float MAX_WALL = 4000;  // (a wall segment longer than this, world units, is not a wall)
     /** The game's romfs/nativeNX folder (set by Companion); null when the game's files aren't known. */
     static volatile File root;
 
@@ -78,14 +80,26 @@ final class AreaMap {
         }
     }
 
-    final Mesh ground, water;
-    /** The whole of the ground's extent (the water's when there is no ground), in world units. */
+    final Mesh ground;
+    /** The walls seen from above, as the lines they stand on: x0 z0 x1 z1 for each. */
+    final float[] walls;
+    /** The whole of the ground's extent (the walls' when there is no ground), in world units. */
     final float minX, maxX, minZ, maxZ;
 
-    private AreaMap(Mesh ground, Mesh water) {
+    private AreaMap(Mesh ground, float[] walls) {
         this.ground = ground;
-        this.water = water;
-        float[] b = bounds(ground.count() > 0 ? ground : water, null);
+        this.walls = walls;
+        float[] b = bounds(ground, null);
+        if (ground.count() == 0) {
+            b = new float[] {Float.MAX_VALUE, -Float.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE};
+            for (int i = 0; i + 1 < walls.length; i += 2) {
+                b[0] = Math.min(b[0], walls[i]);
+                b[1] = Math.max(b[1], walls[i]);
+                b[2] = Math.min(b[2], walls[i + 1]);
+                b[3] = Math.max(b[3], walls[i + 1]);
+            }
+            if (b[0] > b[1]) b = new float[] {0, 1, 0, 1};
+        }
         minX = b[0];
         maxX = b[1];
         minZ = b[2];
@@ -109,7 +123,7 @@ final class AreaMap {
 
     // ---- loading (any thread; a few areas are kept, a miss too, so going back and forth reads nothing again)
 
-    private static final AreaMap NONE = new AreaMap(new Mesh(new float[0], new float[0], new int[0], 0), new Mesh(new float[0], new float[0], new int[0], 0));
+    private static final AreaMap NONE = new AreaMap(new Mesh(new float[0], new float[0], new int[0], 0), new float[0]);
     private static final HashMap<Integer, AreaMap> cache = new HashMap<>();
 
     /** The area `zone` of stage `stage` (the quest's stage number: 1 is m01), null when the files aren't there or aren't understood. */
@@ -161,10 +175,10 @@ final class AreaMap {
                 if (data == null) continue;
                 if (isGround) { g = data; gRank = rank; } else { w = data; wRank = rank; }
             }
-            Mesh gt = g != null ? faces(g) : null, wt = w != null ? faces(w) : null;
-            if ((gt == null || gt.count() == 0) && (wt == null || wt.count() == 0)) return null;
-            Mesh none = NONE.ground;
-            return new AreaMap(gt != null ? gt : none, wt != null ? wt : none);
+            Mesh gt = g != null ? faces(g) : null;
+            float[] wt = w != null ? walls(w) : null;
+            if ((gt == null || gt.count() == 0) && (wt == null || wt.length == 0)) return null;
+            return new AreaMap(gt != null ? gt : NONE.ground, wt != null ? wt : NONE.walls);
         }
     }
 
@@ -201,26 +215,29 @@ final class AreaMap {
 
     // ---- the file
 
-    /** The faces of an "SBC" collision file that face up (a floor, a slope), from above; null if not understood. */
-    static Mesh faces(byte[] d) {
-        if (d.length < 0x40 || d[0] != 'S' || d[1] != 'B' || d[2] != 'C' || (d[3] & 0xff) != 0xff) return null;
-        ByteBuffer b = ByteBuffer.wrap(d).order(ByteOrder.LITTLE_ENDIAN);
+    // Where the triangles and the vertices are in an "SBC" file: the triangle count, the vertex count, the first triangle's
+    // offset, the first vertex's; null if the file isn't one that is understood
+    private static int[] locate(ByteBuffer b, int length) {
+        if (length < 0x50 || b.get(0) != 'S' || b.get(1) != 'B' || b.get(2) != 'C' || (b.get(3) & 0xff) != 0xff) return null;
         int nt = b.getInt(0x18), nv = b.getInt(0x1c);
         if (nt < 1 || nv < 3 || nt > 400000 || nv > 400000) return null;
         long trisLen = 32L * nt;
-        int first = -1;
-        for (int o = 0x30; o + trisLen + 12 + 16L * nv <= d.length; o += 4) {
+        for (int o = 0x30; o + trisLen + 12 + 16L * nv <= length; o += 4) {
             if (!triangle(b, o, nv)) continue;
             int k = 1;
             while (k < nt && triangle(b, o + 32 * k, nv)) k++;
-            if (k == nt) {
-                first = o;
-                break;
-            }
+            if (k == nt) return new int[] {nt, nv, o, (int) (o + trisLen + 12)};
             o += 32 * (k - 1);  // (not the run: on past what was checked)
         }
-        if (first < 0) return null;
-        int v0 = (int) (first + trisLen + 12);
+        return null;
+    }
+
+    /** The faces of an "SBC" collision file that face up (a floor, a slope), from above; null if not understood. */
+    static Mesh faces(byte[] d) {
+        ByteBuffer b = ByteBuffer.wrap(d).order(ByteOrder.LITTLE_ENDIAN);
+        int[] at = locate(b, d.length);
+        if (at == null) return null;
+        int nt = at[0], nv = at[1], first = at[2], v0 = at[3];
         float bx0 = b.getFloat(0x30) + 1, bz0 = b.getFloat(0x38) + 1, bx1 = b.getFloat(0x40) - 1, bz1 = b.getFloat(0x48) - 1;
         float[] xz = new float[nt * 6], ys = new float[nt];
         int[] corner = new int[nt * 3], parent = new int[nv];
@@ -255,6 +272,53 @@ final class AreaMap {
             comp[i] = number[root];
         }
         return new Mesh(java.util.Arrays.copyOf(xz, n * 6), java.util.Arrays.copyOf(ys, n), comp, pieces);
+    }
+
+    /**
+     * The faces that stand up (walls), from above: each is a thin sliver, the line it stands on: x0 z0 x1 z1, the longest side of
+     * its footprint. Those that touch the file's box are left out, as in faces(). Null if not understood.
+     */
+    static float[] walls(byte[] d) {
+        ByteBuffer b = ByteBuffer.wrap(d).order(ByteOrder.LITTLE_ENDIAN);
+        int[] at = locate(b, d.length);
+        if (at == null) return null;
+        int nt = at[0], first = at[2], v0 = at[3];
+        float bx0 = b.getFloat(0x30) + 1, bz0 = b.getFloat(0x38) + 1, bx1 = b.getFloat(0x40) - 1, bz1 = b.getFloat(0x48) - 1;
+        float[] out = new float[nt * 4];
+        int n = 0;
+        float[] px = new float[3], pz = new float[3];
+        for (int i = 0; i < nt; i++) {
+            int o = first + 32 * i;
+            if (Math.abs(b.getFloat(o + 0x10)) >= 0.5f) continue;  // (a floor or a ceiling)
+            boolean edge = false;
+            for (int k = 0; k < 3; k++) {
+                int v = v0 + 16 * (b.getShort(o + 0x18 + 2 * k) & 0xffff);
+                px[k] = b.getFloat(v);
+                pz[k] = b.getFloat(v + 8);
+                edge |= px[k] <= bx0 || px[k] >= bx1 || pz[k] <= bz0 || pz[k] >= bz1;
+            }
+            if (edge) continue;
+            int best = -1;
+            float longest = 1;  // (shorter than a unit: straight up and down, nothing to draw)
+            for (int k = 0; k < 3; k++) {
+                int m = (k + 1) % 3;
+                float len = (float) Math.hypot(px[m] - px[k], pz[m] - pz[k]);
+                if (len > longest) {
+                    longest = len;
+                    best = k;
+                }
+            }
+            if (best < 0 || longest > MAX_WALL) continue;
+            // (a standing face has no width from above: a wide footprint is a slope, or a big face of the area's hull)
+            float cross = Math.abs((px[1] - px[0]) * (pz[2] - pz[0]) - (px[2] - px[0]) * (pz[1] - pz[0]));
+            if (cross > 0.25f * longest * longest) continue;
+            int m = (best + 1) % 3;
+            out[n++] = px[best];
+            out[n++] = pz[best];
+            out[n++] = px[m];
+            out[n++] = pz[m];
+        }
+        return java.util.Arrays.copyOf(out, n);
     }
 
     private static int find(int[] p, int a) {

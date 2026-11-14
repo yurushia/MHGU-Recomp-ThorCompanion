@@ -8,6 +8,9 @@
 #include "settings_icons.h"
 #include "app_actions.h"
 #include "cheats.h"
+#ifdef __ANDROID__
+#include "hle/companion_items.h"  // (item numbers and names: the Duo Companion tab's pins)
+#endif
 #include "forge.h"
 #include "overlay.h"
 #include "keymap.h"
@@ -168,7 +171,7 @@ const Theme &theme() {
 ImVec4 vec(ImU32 c) { return ImGui::ColorConvertU32ToFloat4(c); }
 // The Mods tab: the mods folder's state (modorder.h), which is saved with the rest of the settings
 #ifdef __ANDROID__
-constexpr int PAGES = 9, MODS_PAGE = 5, CHEATS_PAGE = 6, APP_PAGE = 7, ANDROID_PAGE = 8;  // (Android: the tab for its own settings)
+constexpr int PAGES = 10, MODS_PAGE = 5, CHEATS_PAGE = 6, APP_PAGE = 7, ANDROID_PAGE = 8, COMPANION_PAGE = 9;  // (Android: the tab for its own settings, and the second screen's)
 #else
 constexpr int PAGES = 8, MODS_PAGE = 5, CHEATS_PAGE = 6, APP_PAGE = 7;
 #endif
@@ -402,7 +405,8 @@ bool equal(const Config &a, const Config &b) {
     if (memcmp(a.binds, b.binds, sizeof a.binds))
         return false;
     if (strcmp(a.ldn_join, b.ldn_join) || strcmp(a.ldn_server, b.ldn_server) || strcmp(a.ldn_key, b.ldn_key) ||
-        strcmp(a.chat_key, b.chat_key) || strcmp(a.save_dir, b.save_dir) || strcmp(a.save_location, b.save_location) || strcmp(a.game_dir, b.game_dir))
+        strcmp(a.chat_key, b.chat_key) || strcmp(a.save_dir, b.save_dir) || strcmp(a.save_location, b.save_location) || strcmp(a.game_dir, b.game_dir) ||
+        strcmp(a.companion_pins, b.companion_pins))
         return false;
     for (int n = 0; n < 4; ++n)
         if (a.hp.scale[n] != b.hp.scale[n])
@@ -1715,6 +1719,9 @@ void reset_section() {
         SDL_strlcpy(c.save_dir, f.save_dir, sizeof c.save_dir);
         SDL_strlcpy(c.game_dir, f.game_dir, sizeof c.game_dir);
         break;
+    case COMPANION_PAGE:
+        SDL_strlcpy(c.companion_pins, f.companion_pins, sizeof c.companion_pins);
+        break;
 #endif
     case APP_PAGE:
         c.language = f.language;
@@ -1819,6 +1826,98 @@ void add_cheat() {
                  return true;
              });
 }
+#ifdef __ANDROID__
+// ---- the Duo Companion tab: the second screen's panel (android/java .../CompanionView.java, runtime/hle/companion.c)
+// Pinned items: always first on the panel's item menu, in the order they were pinned. The text is config.c's PinnedItems (item
+// numbers, comma separated), kept in the draft like any setting, so Save stores it and Reset this tab empties it.
+constexpr int PIN_MAX = 8;  // what the panel's first page holds (hle/companion.c PIN_MAX, CompanionView.PER_PAGE)
+// The items that can be pinned: what a hunter takes into a quest and can use from the item bar (numbers as companion_items.h)
+const int PIN_CATALOG[] = {9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
+                           56, 63, 64, 65, 66, 67, 68, 70, 71, 72, 73, 74, 75, 76, 77, 78, 83, 84, 86, 87, 88, 89, 90, 91, 92,
+                           303, 304, 305, 306};
+std::string pin_title(int id) {
+    int lo = 0, hi = (int)(sizeof g_item_names / sizeof *g_item_names) - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (g_item_names[mid].id == id)
+            return g_item_names[mid].name;
+        if (g_item_names[mid].id < id)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
+    }
+    return "#" + std::to_string(id);  // (a number that is not in the name table)
+}
+std::vector<int> pins_parse(const char *text) {
+    std::vector<int> pins;
+    for (const char *q = text; *q && (int)pins.size() < PIN_MAX;) {
+        while (*q == ',' || *q == ' ')
+            ++q;
+        int v = 0, digits = 0;
+        while (*q >= '0' && *q <= '9' && digits < 6)
+            v = v * 10 + (*q++ - '0'), ++digits;
+        while (*q && *q != ',')
+            ++q;
+        if (digits && v > 0 && v < 0x10000 && std::find(pins.begin(), pins.end(), v) == pins.end())
+            pins.push_back(v);
+    }
+    return pins;
+}
+void pins_store(const std::vector<int> &pins) {
+    std::string t;
+    for (int id : pins)
+        t += (t.empty() ? "" : ",") + std::to_string(id);
+    SDL_strlcpy(s.draft.companion_pins, t.c_str(), sizeof s.draft.companion_pins);
+    s.saved_notice = false;
+}
+// Pins an item (at the end of the order) or unpins it; a ninth is refused (the rows are shown disabled then)
+void pins_set(int id, bool on) {
+    std::vector<int> pins = pins_parse(s.draft.companion_pins);
+    auto it = std::find(pins.begin(), pins.end(), id);
+    if (on && it == pins.end() && (int)pins.size() < PIN_MAX)
+        pins.push_back(id);
+    else if (!on && it != pins.end())
+        pins.erase(it);
+    pins_store(pins);
+}
+void companion_rows(std::vector<Row> &r) {
+    std::vector<int> pins = pins_parse(s.draft.companion_pins);
+    bool full = (int)pins.size() >= PIN_MAX;
+    header(r, "pins.header", tr("Pinned items"));
+    action(r, "pins.count", tr("Pinned on the first page"), []() {}, false);
+    r.back().value = std::to_string(pins.size()) + " / " + std::to_string(PIN_MAX);
+    r.back().help = tr("Pinned items come first on the companion panel's item menu, in the order you pinned them, and keep their places whether or not you are carrying them (one you have run out of is shown dimmed). The first page holds 8, so at most 8 can be pinned: unpin one to pin another. The items that are not pinned follow, on what is left of the first page and on the pages after it. Press Save to keep the choice.");
+    action(r, "pins.clear", tr("Unpin all"), []() { pins_store({}); }, !pins.empty());
+    r.back().help = tr("Unpins every item: the panel's item menu goes back to the item bar's own order.");
+    header(r, "pins.items", tr("Items"));
+    auto item_row = [&](int id) {
+        auto it = std::find(pins.begin(), pins.end(), id);
+        bool on = it != pins.end();
+        Row row;
+        row.id = "pin." + std::to_string(id);
+        row.title = pin_title(id);
+        row.value = on ? std::string(tr("Pinned")) + " " + std::to_string(it - pins.begin() + 1)
+                       : full ? tr("First page is full") : tr("Not pinned");
+        row.enabled = on || !full;
+        row.adjust = [id](int d) { pins_set(id, d > 0); };
+        row.activate = [id]() {
+            std::vector<int> now = pins_parse(s.draft.companion_pins);
+            pins_set(id, std::find(now.begin(), now.end(), id) == now.end());
+        };
+        r.push_back(std::move(row));
+    };
+    for (int id : PIN_CATALOG)
+        item_row(id);
+    bool other = false;  // (pinned in the ini file by hand, and not in the list above: shown so they can be unpinned)
+    for (int id : pins)
+        if (std::find(std::begin(PIN_CATALOG), std::end(PIN_CATALOG), id) == std::end(PIN_CATALOG)) {
+            if (!other)
+                header(r, "pins.other", tr("Other pinned items"));
+            other = true;
+            item_row(id);
+        }
+}
+#endif
 void cheat_rows(std::vector<Row> &r) {
     action(r, "cheats.add", tr("Add a cheat"), []() { add_cheat(); });
     r.back().help = tr("Paste a cheat code (Atmosphere format, as for Ryujinx). It is saved in cheats/added.txt and turns on right away.");
@@ -2300,6 +2399,9 @@ std::vector<Row> main_rows() {
         r.back().help = tr("Copies the exefs and romfs folders into the app from any folder on this device, replacing the game files it has, and uses them from now on. The app closes afterwards.");
         break;
     }
+    case COMPANION_PAGE:
+        companion_rows(r);
+        break;
 #endif
     }
     spacer(r, "actions.gap");  // (Save and Reset this tab, and on Menu Options Restart and Exit game, apart)
@@ -3093,7 +3195,7 @@ void settings_panel(bool *open) {
             first_page((s.page + PAGES - 1) % PAGES);
         const char *pages[] = {"Display", "Graphics & Audio", "Controls", "Network", "Misc", "Mods", "Cheats", "Menu Options"
 #ifdef __ANDROID__
-                               , "Android"
+                               , "Android", "Duo Companion"
 #endif
         };
         float avail = ImGui::GetContentRegionAvail().x;

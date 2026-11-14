@@ -68,7 +68,7 @@ public class Check {
 
     // The sheet is drawn 1:1 in a 1240 x 1080 view: view and sheet coordinates are the same. Button i of a page:
     static float cx(int i) { return 98 + (i % 4) * (252 + 12) + 126; }
-    static float cy(int i) { return 598 + (i / 4) * (214 + 12) + 107; }
+    static float cy(int i) { return 632 + (i / 4) * (197 + 12) + 98; }
 
 
     // ---- a made-up game folder for the map: one archive with the ground of area 4 of stage 1 (and a decoy for area 5)
@@ -81,7 +81,9 @@ public class Check {
     // a b c and the normal's y: the two squares, a wall, and a big triangle of the box (neither is ground to show)
     static final float[][] T = {{0, 1, 2, 1}, {0, 2, 3, 1}, {4, 5, 6, 1}, {4, 6, 7, 1}, {0, 1, 8, 0}, {9, 10, 11, 1}};
 
-    static byte[] sbc() {
+    static byte[] sbc() { return sbc(V, T); }
+
+    static byte[] sbc(float[][] V, float[][] T) {
         int first = 0x90, nt = T.length, nv = V.length;
         java.nio.ByteBuffer b = java.nio.ByteBuffer.allocate(first + 32 * nt + 12 + 16 * nv + 64).order(java.nio.ByteOrder.LITTLE_ENDIAN);
         b.put(new byte[] {'S', 'B', 'C', (byte) 0xff});
@@ -96,6 +98,10 @@ public class Check {
         for (int i = 0; i < nv; i++) b.putFloat(v0 + 16 * i, V[i][0]).putFloat(v0 + 16 * i + 4, V[i][1]).putFloat(v0 + 16 * i + 8, V[i][2]);
         return b.array();
     }
+
+    // Two triangles that overlap and share a corner (so one piece): the second wound the opposite way to the first in area 6, the same way in 7
+    static final float[][] OV = {{0, 0, 0}, {4000, 0, 0}, {0, 0, 4000}, {3000, 0, 3000}, {3000, 0, 0}};
+    static final float[][] OV_MIXED = {{0, 1, 2, 1}, {0, 3, 4, 1}}, OV_SAME = {{0, 1, 2, 1}, {0, 4, 3, 1}};
 
     static byte[] arc(String[] names, byte[][] files) throws Exception {
         int n = names.length, off = 12 + 80 * n;
@@ -127,8 +133,10 @@ public class Check {
         dir.mkdirs();
         byte[] ground = sbc();
         try (java.io.FileOutputStream f = new java.io.FileOutputStream(new File(dir, "m01.arc"))) {
-            f.write(arc(new String[] {"stage\\m01d\\m01a05d\\collision\\m01a05d-a-g00", "stage\\m01d\\m01a04d\\collision\\m01a04d-a-g00"},
-                        new byte[][] {new byte[] {1, 2, 3, 4}, ground}));
+            f.write(arc(new String[] {"stage\\m01d\\m01a05d\\collision\\m01a05d-a-g00", "stage\\m01d\\m01a04d\\collision\\m01a04d-a-g00",
+                                      "stage\\m01d\\m01a04d\\collision\\m01a04d-a-w00", "stage\\m01d\\m01a06d\\collision\\m01a06d-a-g00",
+                                      "stage\\m01d\\m01a07d\\collision\\m01a07d-a-g00"},
+                        new byte[][] {new byte[] {1, 2, 3, 4}, ground, ground, sbc(OV, OV_MIXED), sbc(OV, OV_SAME)}));
         }
         return root;
     }
@@ -165,7 +173,7 @@ public class Check {
         check(Companion.used.size() == 3 && Companion.used.get(2) == 12, "a tap with a little jitter still uses the item");
         // taps outside the pouch (the monsters, the header) and in the gaps between buttons use nothing
         int before = Companion.used.size();
-        tap(600, 330); tap(600, 60); tap(98 + 252 + 6, cy(0)); tap(cx(0), 598 + 214 + 6);
+        tap(600, 330); tap(600, 60); tap(98 + 252 + 6, cy(0)); tap(cx(0), 632 + 197 + 6);
         check(Companion.used.size() == before, "taps outside the buttons use nothing");
 
         // ---- swiping
@@ -261,7 +269,7 @@ public class Check {
         // ---- the display's own size: the same sheet scaled
         view.w = 620; view.h = 540;
         fresh(quest(16, ""));
-        tap((98 + 126) / 2f, (598 + 107) / 2f);  // button 1 at half size
+        tap((98 + 126) / 2f, (632 + 98) / 2f);  // button 1 at half size
         check(Companion.used.size() == 1 && Companion.used.get(0) == 10, "touch coordinates follow the scale, got " + Companion.used);
         view.w = 1240; view.h = 1080;
 
@@ -278,7 +286,7 @@ public class Check {
         check(AreaMap.load(1, 4) == null, "no game folder, no map");
         AreaMap.root = madeUpGame();
         AreaMap loaded = AreaMap.load(1, 4);
-        check(loaded != null && loaded.ground.count() == 4 && loaded.maxX == 8000 && loaded.minX == 0, "the area is read from the archive (ground bounds 0..8000), got " + (loaded == null ? "null" : loaded.ground.count() + " tris, x " + loaded.minX + ".." + loaded.maxX));
+        check(loaded != null && loaded.ground.count() == 4 && loaded.walls.length == 4 && loaded.maxX == 8000 && loaded.minX == 0, "the area is read from the archive (ground bounds 0..8000), got " + (loaded == null ? "null" : loaded.ground.count() + " tris, x " + loaded.minX + ".." + loaded.maxX));
         check(AreaMap.load(1, 5) == null, "an entry that is not a collision file gives nothing");
         check(AreaMap.load(2, 4) == null, "a stage with no archive gives nothing");
 
@@ -298,6 +306,117 @@ public class Check {
         save(draw(), out, "quest-radar.png");
         fresh(quest(8, ""));
         waitForMap("");
+
+        // ---- triangles that overlap and are wound opposite ways must not cancel each other out (that left holes: half of one area's ground)
+        int[] lit = new int[2];
+        for (int k = 0; k < 2; k++) {
+            fresh(quest(8, "").replace("\"zone\":4", "\"zone\":" + (6 + k)).replace("\"x\":2000.0,\"y\":0.0,\"z\":2000.0", "\"x\":500.0,\"y\":0.0,\"z\":300.0"));
+            waitForMap("");
+            BufferedImage im = draw();
+            for (int y = 356; y < 556; y++)
+                for (int x = 40; x < 636; x++)
+                    if ((im.getRGB(x, y) & 0xffffff) == 0xe2d8b8) lit[k]++;
+            if (k == 0) save(im, out, "quest-map-overlap.png");
+        }
+        check(lit[0] > 3000 && Math.abs(lit[0] - lit[1]) <= lit[1] / 20, "overlapping triangles wound both ways are drawn as much as ones wound one way: " + lit[0] + " against " + lit[1] + " pixels");
+
+        // ---- the map's buttons and dragging: the whole area can be reached
+        fresh(quest(8, ""));
+        waitForMap("");
+        Companion.used.clear();
+        float bx = 28 + 620 - 12 - 8 - 36 + 18, b0 = 344 + 12 + 8 + 18, b1 = b0 + 42, b2 = b1 + 42;
+        check(view.zoomLevel() == 1 && !view.zoomed(), "the map starts on the whole area");
+        tap(bx, b1);
+        check(view.zoomLevel() == 1, "zoom out at the whole area does nothing");
+        tap(bx, b0);
+        check(view.zoomLevel() == 2 && view.zoomed() && view.following(), "the plus button zooms in, on the hunter");
+        tap(bx, b0);
+        tap(bx, b0);
+        tap(bx, b0);
+        tap(bx, b0);
+        check(view.zoomLevel() == 16, "up to 16 times, and no further, got " + view.zoomLevel());
+        save(draw(), out, "quest-map-zoom16.png");
+        tap(bx, b1);
+        check(view.zoomLevel() == 8, "the minus button zooms out");
+        touch(MotionEvent.ACTION_DOWN, 300, 460, 0); touch(MotionEvent.ACTION_MOVE, 360, 480, 40); touch(MotionEvent.ACTION_MOVE, 420, 500, 40); touch(MotionEvent.ACTION_UP, 420, 500, 20);
+        check(!view.following() && view.zoomLevel() == 8, "dragging the map moves it (and stops it following the hunter)");
+        save(draw(), out, "quest-map-panned.png");
+        tap(bx, b2);
+        check(view.following(), "the target button puts it back on the hunter");
+        tap(bx, b1);
+        tap(bx, b1);
+        tap(bx, b1);
+        check(view.zoomLevel() == 1, "back to the whole area");
+        touch(MotionEvent.ACTION_DOWN, 300, 460, 0); touch(MotionEvent.ACTION_MOVE, 380, 480, 40); touch(MotionEvent.ACTION_UP, 380, 480, 20);
+        check(view.zoomLevel() == 1 && Companion.used.isEmpty(), "a drag on the whole-area map is not a tap (it does not zoom)");
+        tap(300, 450);
+        check(view.zoomLevel() == 4 && view.following(), "a tap on the map zooms in on the hunter");
+        tap(300, 450);
+        check(view.zoomLevel() == 1, "and a second tap back out");
+        check(Companion.used.isEmpty(), "none of that used an item");
+
+        // ---- what a tap on an item is doing, and why it did not work, is said in words
+        fresh(quest(8, ",\"using\":10,\"step\":\"wait\",\"waitFor\":\"hunter\""));
+        check(view.message().startsWith("Waiting for the hunter") && view.message().contains("Potion"), "waiting for the hunter: " + view.message());
+        fresh(quest(8, ",\"using\":10,\"step\":\"wait\",\"waitFor\":\"bar\""));
+        check(view.message().startsWith("Waiting for the game") && view.message().contains("Potion"), "waiting for the game: " + view.message());
+        save(draw(), out, "quest-waiting.png");
+        fresh(quest(8, ",\"using\":10,\"step\":\"sheathe\""));
+        check(view.message().startsWith("Putting the weapon away"), "sheathing: " + view.message());
+        fresh(quest(8, ",\"result\":{\"slot\":10,\"ok\":false,\"why\":\"blocked\"}"));
+        check(view.message().startsWith("Couldn't use Potion") && view.message().contains("try again"), "a failure says what and to try again: " + view.message());
+        save(draw(), out, "quest-failed.png");
+        Companion.used.clear();
+        tap(cx(0), cy(0));  // the retry is a tap on the same button
+        check(Companion.used.size() == 1 && Companion.used.get(0) == 10, "a failed item can be tapped again");
+        fresh(quest(8, ",\"result\":{\"slot\":10,\"ok\":false,\"why\":\"ignored\"}"));
+        check(view.message().contains("didn't take the button"), "ignored: " + view.message());
+        fresh(quest(8, ",\"result\":{\"slot\":10,\"ok\":false,\"why\":\"sheathe\"}"));
+        check(view.message().contains("wouldn't go away"), "sheathe: " + view.message());
+        fresh(quest(8, ",\"result\":{\"slot\":10,\"ok\":false,\"why\":\"empty\"}"));
+        check(view.message().startsWith("No Potion left"), "empty: " + view.message());
+        fresh(quest(8, ",\"result\":{\"slot\":10,\"ok\":false,\"why\":\"timeout\"}"));
+        check(view.message().startsWith("Timed out"), "timeout: " + view.message());
+        fresh(quest(8, ",\"result\":{\"slot\":10,\"ok\":true,\"why\":\"taken\"}"));
+        check(view.message().equals("Used Potion."), "success: " + view.message());
+        fresh(quest(8, ""));
+        check(view.message().isEmpty(), "nothing to say when nothing is going on");
+
+        // ---- pinned items: first, in their order, a pinned item that is not in the pouch keeps its place, a page's worth at most
+        String itemsJson = "[{\"slot\":3,\"id\":9,\"n\":4,\"name\":\"Potion\"},{\"slot\":5,\"id\":10,\"n\":2,\"name\":\"Mega Potion\",\"sel\":true},{\"slot\":7,\"id\":56,\"n\":9,\"name\":\"Whetstone\"}]";
+        org.json.JSONArray its = new org.json.JSONObject("{\"a\":" + itemsJson + "}").optJSONArray("a");
+        org.json.JSONArray pn = new org.json.JSONObject("{\"a\":[{\"id\":56,\"name\":\"Whetstone\"},{\"id\":28,\"name\":\"Max Potion\"},{\"id\":9,\"name\":\"Potion\"}]}").optJSONArray("a");
+        java.util.ArrayList<CompanionView.Place> pl = CompanionView.arrange(its, pn);
+        check(pl.size() == 4, "three pins and one other item are four places, got " + pl.size());
+        check(pl.get(0).name.equals("Whetstone") && pl.get(0).pinned && pl.get(0).slot == 7 && !pl.get(0).gone, "the first pin, in the pouch");
+        check(pl.get(1).name.equals("Max Potion") && pl.get(1).pinned && pl.get(1).gone && pl.get(1).slot == -1, "a pinned item that is not in the pouch keeps its place, gone");
+        check(pl.get(2).name.equals("Potion") && pl.get(2).pinned && pl.get(2).slot == 3, "the third pin");
+        check(pl.get(3).name.equals("Mega Potion") && !pl.get(3).pinned && pl.get(3).selected, "the others follow, in the bar's order");
+        check(CompanionView.arrange(its, null).size() == 3 && !CompanionView.arrange(its, null).get(0).pinned, "no pins: the bar's own order");
+        StringBuilder many = new StringBuilder("{\"a\":[");
+        for (int i = 0; i < 10; i++) many.append(i > 0 ? "," : "").append("{\"id\":").append(100 + i).append(",\"name\":\"P").append(i).append("\"}");
+        java.util.ArrayList<CompanionView.Place> cut = CompanionView.arrange(its, new org.json.JSONObject(many + "]}").optJSONArray("a"));
+        int pinnedCount = 0;
+        for (CompanionView.Place q : cut) pinnedCount += q.pinned ? 1 : 0;
+        check(pinnedCount == 8 && cut.size() == 8 + 3, "at most a page's worth are pinned: " + pinnedCount + " of " + cut.size());
+        check(CompanionView.arrange(new org.json.JSONObject("{\"a\":[]}").optJSONArray("a"), pn).isEmpty(), "no items on the bar: nothing, not a page of placeholders");
+
+        // ... on the panel: the pinned ones lead, a tap on a gone one uses nothing, and one that went does not leave a tappable place behind
+        fresh(quest(8, ""));
+        String pinned = quest(0, "").replace("\"items\":[]", "\"pinMax\":8,\"pins\":[{\"id\":56,\"name\":\"Whetstone\"},{\"id\":28,\"name\":\"Max Potion\"},{\"id\":9,\"name\":\"Potion\"}],\"items\":" + itemsJson);
+        fresh(pinned);
+        save(draw(), out, "quest-pinned.png");
+        tap(cx(0), cy(0));
+        check(Companion.used.size() == 1 && Companion.used.get(0) == 7, "the first pinned item is first: its slot is used, got " + Companion.used);
+        tap(cx(1), cy(1));
+        check(Companion.used.size() == 1, "a pinned item that is not in the pouch uses nothing");
+        tap(cx(2), cy(2));
+        check(Companion.used.size() == 2 && Companion.used.get(1) == 3, "the third place is the third pin");
+        tap(cx(3), cy(3));
+        check(Companion.used.size() == 3 && Companion.used.get(2) == 5, "then the other items");
+        tap(cx(4), cy(4));
+        check(Companion.used.size() == 3, "and no tappable place where there is no item");
+
 
         // ---- the arrows of the pouch
         fresh(quest(16, ""));

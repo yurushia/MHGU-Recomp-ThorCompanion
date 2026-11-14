@@ -260,11 +260,18 @@ all: $(EXE) $(if $(GEN_SRC),$(GAMELIB)) $(UPDATER) $(if $(filter windows,$(PLATF
      $(if $(ANDROID),apk,data licenses pipelist)
 
 # Host-only INI/settings regression test: no game dump or generated code required.
-.PHONY: test-settings
+.PHONY: test-settings test-companion-pins
 test-settings: $(LIB_STAMPS)
 	@mkdir -p $(O)/settings-test
 	$(CC) $(RTFLAGS) tests/test_settings.c runtime/config.c runtime/config_store.c $(SDL_LIBS) -lm -o $(O)/settings-test/test-settings$(if $(filter windows,$(PLATFORM)),.exe)
 	$(O)/settings-test/test-settings$(if $(filter windows,$(PLATFORM)),.exe) $(O)/settings-test/settings.ini
+
+# The Duo Companion tab's pinned items (config.c's [Companion] PinnedItems): read, saved, read again.
+test-companion-pins: $(LIB_STAMPS)
+	@mkdir -p $(O)/settings-test
+	$(CC) $(RTFLAGS) tests/test_companion_pins.c runtime/config.c runtime/config_store.c $(SDL_LIBS) -lm -o $(O)/settings-test/test-companion-pins$(if $(filter windows,$(PLATFORM)),.exe)
+	@rm -f $(O)/settings-test/pins.ini
+	$(O)/settings-test/test-companion-pins$(if $(filter windows,$(PLATFORM)),.exe) $(O)/settings-test/pins.ini
 
 # Host-only test of game-action rebinding (runtime/actions.c): ini, sampling, and the golden property of the defaults.
 .PHONY: test-actions

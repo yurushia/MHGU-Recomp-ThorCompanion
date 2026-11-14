@@ -4,9 +4,15 @@
 //    "hunter":{"name":"..","weapon":7,"hp":100,"hpMax":150,"hpRed":110,"st":900.0,"stMax":900.0,"sharp":300,"sharpMax":450,
 //              "x":0.0,"y":0.0,"z":0.0},
 //    "monsters":[{"id":2,"name":"Rathalos","zone":4,"hp":1234,"hpMax":4000,"x":0.0,"y":0.0,"z":0.0}],
-//    "items":[{"slot":0,"id":9,"n":10,"name":"Potion","sel":true}],"using":0,"step":"sheathe"}
+//    "items":[{"slot":0,"id":9,"n":10,"name":"Potion","sel":true}],"pinMax":8,"pins":[{"id":9,"name":"Potion"}],
+//    "using":0,"step":"sheathe","waitFor":"hunter","result":{"slot":0,"ok":false,"why":"blocked"}}
+// A position (the hunter's, a monster's "x","y","z") is there only when the game has a real one: never a made-up 0, 0, 0.
 // "using": the pouch slot of an item asked for with companion_use that the game hasn't taken yet (absent: none);
-// "step": where that has got to: "wait" (for the hunter to be free), "sheathe" (putting the weapon away), "use".
+// "step": where that has got to: "wait" (for the hunter to be free), "sheathe" (putting the weapon away), "use". "waitFor": what a
+// "wait" is waiting for: "hunter" (idle, the weapon away) or "bar" (the game's own "may use an item" test). "result": how the last
+// use ended, for a moment: ok (the game took it), or why not: "blocked" (the game's own test said no for three seconds),
+// "ignored" (the button was pressed a few times and not taken), "sheathe" (the weapon would not go away), "empty" (none left),
+// "timeout" (ten seconds). "pins": the pinned items, in their order (Settings > Duo Companion), "pinMax" what a page holds.
 // place: "quest", "town" (then "town": its type, 0 Hub, 1-6 villages, 7 Hunters' Pub) or "menu" (no hunter).
 //   MHGU_COMPANION_LOG=1   log the text once a second (to check the values on any platform)
 //
@@ -113,6 +119,10 @@
 #define SETTLE_NS      150000000ull    // idle again after the weapon is away: a moment to be sure
 #define AWAY_FORCE_NS  1000000000ull   // ... or this long after it is away, idle or not
 #define USE_TRIES      4
+#define BLOCK_NS       3000000000ull   // how long the game's own "may use an item" test may say no (with the hunter free) before the use is given up
+#define RESULT_OK_NS   1500000000ull   // how long the panel is told a use went through
+#define RESULT_BAD_NS  8000000000ull   // ... and why one did not (long enough to read it and tap again)
+#define PIN_MAX        8               // pinned items: what the first page of the panel holds
 #define SHEATHE_TRIES  3
 #define BTN_Y_BIT      (1ull << 3)     // NpadButton Y (input.h)
 
@@ -128,7 +138,10 @@ static volatile int u_phase;
 static int u_tries, u_sheathes, u_count;
 static bool u_acted, u_after_sheathe;
 static uint32_t u_act_press;
-static uint64_t u_deadline, u_hold_until, u_retry, u_wait_from, u_away_at, u_idle_since;
+static uint64_t u_deadline, u_hold_until, u_retry, u_wait_from, u_away_at, u_idle_since, u_blocked_since;
+static volatile int u_wait_for;  // while waiting: 0 for the hunter (idle, the weapon away), 1 for the game's own "may use an item" test
+// How the last use ended, for the panel (in the JSON a while): slot -1 none. why: "taken", "blocked", "ignored", "sheathe", "empty", "timeout".
+static struct { int slot, ok; const char *why; uint64_t until; } u_res = {-1, 0, "", 0};
 
 static bool sane(uint32_t a) { return a >= 0x08000000u && a < 0xF0000000u && !(a & 3); }
 
@@ -157,6 +170,12 @@ static void put_str(Out *o, const char *s) {
 }
 
 static float finite_or_0(float f) { return f == f && f > -1e9f && f < 1e9f ? f : 0.0f; }
+// A position that is really one: finite and sane (never made up: a panel that gets none says so), and, for a monster, not
+// the all-zero one of an object the game has not set up yet.
+static bool pos_ok(float x, float y, float z, bool zero_ok) {
+    bool fin = x == x && y == y && z == z && x > -1e7f && x < 1e7f && y > -1e7f && y < 1e7f && z > -1e7f && z < 1e7f;
+    return fin && (zero_ok || x != 0.0f || y != 0.0f || z != 0.0f);
+}
 
 static const char *item_name(uint32_t id) {
     int lo = 0, hi = (int)(sizeof g_item_names / sizeof *g_item_names) - 1;
@@ -168,6 +187,42 @@ static const char *item_name(uint32_t id) {
     }
     return "";
 }
+
+// The pinned items (Settings > Duo Companion; config.c's PinnedItems, item numbers in a comma separated list): read again when
+// the text changes. They are in the JSON by number and name; the panel puts them first on its first page.
+const char *config_companion_pins(void);  // (config.c; the tests make one)
+static uint16_t g_pins[PIN_MAX];
+static int g_npins;
+static char g_pins_text[96];
+
+static void refresh_pins(void) {
+    const char *t = config_companion_pins();
+    char now[sizeof g_pins_text];
+    snprintf(now, sizeof now, "%s", t ? t : "");
+    if (!strcmp(now, g_pins_text)) return;
+    memcpy(g_pins_text, now, sizeof now);
+    g_npins = 0;
+    for (const char *q = now; *q && g_npins < PIN_MAX;) {
+        while (*q == ',' || *q == ' ') q++;
+        unsigned v = 0, digits = 0;
+        while (*q >= '0' && *q <= '9' && digits < 6) v = v * 10 + (unsigned)(*q++ - '0'), digits++;
+        while (*q && *q != ',') q++;  // (anything else up to the comma is ignored)
+        bool dup = false;
+        for (int i = 0; i < g_npins; i++) dup |= g_pins[i] == v;
+        if (digits && v > 0 && v < 0x10000 && !dup) g_pins[g_npins++] = (uint16_t)v;
+    }
+}
+
+static void put_pins(Out *o) {
+    put(o, ",\"pinMax\":%d,\"pins\":[", PIN_MAX);
+    for (int i = 0; i < g_npins; i++) {
+        put(o, "%s{\"id\":%u,\"name\":", i ? "," : "", g_pins[i]);
+        put_str(o, item_name(g_pins[i]));
+        put(o, "}");
+    }
+    put(o, "]");
+}
+
 
 static uint32_t call(Cpu *c, uint32_t fn, uint32_t r0, uint32_t r1, uint32_t r2) {
     uint32_t saved[16];
@@ -206,6 +261,14 @@ static void use_stop(const char *why) {
     u_slot = -1;
 }
 
+// A use that is over, and how: told to the panel for a while (a failure so the player reads why and can tap again)
+static void use_end(bool ok, const char *why, const char *code) {
+    ULOG("slot %d: %s\n", u_slot, why);
+    u_res.slot = u_slot, u_res.ok = ok, u_res.why = code;
+    u_res.until = plat_now_ns() + (ok ? RESULT_OK_NS : RESULT_BAD_NS);
+    u_slot = -1;
+}
+
 static uint32_t hunter_act(uint32_t pl) { return ((uint32_t)LD16(pl + PL_ACT_ST) << 16) | LD16(pl + PL_ACT_NO); }
 
 // Each time the game reads player 1's pad: steps a use that is waiting; returns the buttons to add to the pad (Y).
@@ -218,13 +281,14 @@ uint64_t companion_buttons(Cpu *c) {
     if (asked >= 0) {
         u_slot = asked, u_phase = U_WAIT, u_tries = u_sheathes = 0, u_acted = u_after_sheathe = false;
         u_deadline = now + USE_TOTAL_NS, u_wait_from = now;
-        u_hold_until = u_retry = u_away_at = u_idle_since = 0;
+        u_hold_until = u_retry = u_away_at = u_idle_since = u_blocked_since = 0;
+        u_wait_for = 0, u_res.slot = -1;
         ULOG("slot %d asked\n", asked);
     }
     if (u_slot < 0) return 0;
     uint32_t pl = local_player();
     if (!pl) return use_stop("left the quest"), 0;
-    if (now >= u_deadline) return use_stop("gave up"), 0;
+    if (now >= u_deadline) return use_end(false, "gave up", "timeout"), 0;
     if (call(c, FN_PL_IS_LOCAL, pl, 0, 0) != 1) return use_stop("not our hunter"), 0;
     uint32_t pd = LD32(pl + PL_DATA), act = hunter_act(pl);
     bool drawn = LD8(pl + PL_DRAWN) != 0, sns = sane(pd) && LD32(pd + PD_WEAPON) == WEAPON_SNS;
@@ -235,11 +299,11 @@ uint64_t companion_buttons(Cpu *c) {
     if (u_phase != U_WAIT && act != u_act_press) u_acted = true;  // (the hunter did something since the press)
 
     if (u_phase == U_USE) {
-        if (pouch_count(u_slot) < u_count) return use_stop("taken: its count dropped"), 0;
+        if (pouch_count(u_slot) < u_count) return use_end(true, "taken: its count dropped", "taken"), 0;
         if (u_acted) {
-            if (!holding) return use_stop("taken: the hunter acted"), 0;
+            if (!holding) return use_end(true, "taken: the hunter acted", "taken"), 0;
         } else if (!holding && now >= u_retry) {
-            if (u_tries >= USE_TRIES) return use_stop("not taken"), 0;
+            if (u_tries >= USE_TRIES) return use_end(false, "not taken", "ignored"), 0;
             u_phase = U_WAIT, u_wait_from = now;
         }
     } else if (u_phase == U_SHEATHE) {
@@ -247,12 +311,12 @@ uint64_t companion_buttons(Cpu *c) {
             u_phase = U_WAIT, u_after_sheathe = true, u_away_at = now, u_wait_from = now;
             ULOG("slot %d: weapon away\n", u_slot);
         } else if (!holding && !u_acted && now >= u_retry) {  // (nothing happened: another Y; if it did, wait for it)
-            if (u_sheathes >= SHEATHE_TRIES) return use_stop("the weapon would not go away"), 0;
+            if (u_sheathes >= SHEATHE_TRIES) return use_end(false, "the weapon would not go away", "sheathe"), 0;
             u_phase = U_WAIT, u_wait_from = now;
         }
     }
     if (u_phase == U_WAIT) {
-        if (pouch_count(u_slot) <= 0) return use_stop("none left"), 0;
+        if (pouch_count(u_slot) <= 0) return use_end(false, "none left", "empty"), 0;
         bool free_now = idle || now - u_wait_from >= IDLE_GRACE_NS;
         if (drawn && !sns) {  // the weapon first: Y puts it away when the hunter is idle
             if (free_now) {
@@ -262,13 +326,25 @@ uint64_t companion_buttons(Cpu *c) {
             }
         } else {
             bool settled = !u_after_sheathe || (u_idle_since && now - u_idle_since >= SETTLE_NS) || now - u_away_at >= AWAY_FORCE_NS;
-            uint32_t vt = LD32(pl), can = sane(vt) ? LD32(vt + VF_CAN_SELECT) : 0;
-            if (settled && (u_after_sheathe || free_now) && call(c, FN_PL_FLAG3, pl, 0, 0) == 0 && can && call(c, can, pl, 1, 0) == 1) {
-                ST16(pl + PL_ITEM_SLOT, u_slot);
-                u_count = pouch_count(u_slot);
-                u_phase = U_USE, u_tries++, u_acted = false, u_act_press = act;
-                u_hold_until = now + USE_HOLD_NS, u_retry = now + USE_TAKEN_NS;
-                ULOG("slot %d: Y to use it (%d)%s\n", u_slot, u_tries, drawn ? ", weapon out" : "");
+            bool ready = settled && (u_after_sheathe || free_now);
+            u_wait_for = ready ? 1 : 0;
+            if (ready) {
+                // The game's own "may use an item" test. (The vtable is in main's image, below the heap: it is not sane(), and
+                // asking for that made this test fail for ever: the use sat in "waiting" until it was given up.)
+                uint32_t vt = LD32(pl), can = vt ? LD32(vt + VF_CAN_SELECT) : 0;
+                if (call(c, FN_PL_FLAG3, pl, 0, 0) == 0 && can && call(c, can, pl, 1, 0) == 1) {
+                    u_blocked_since = 0;
+                    ST16(pl + PL_ITEM_SLOT, u_slot);
+                    u_count = pouch_count(u_slot);
+                    u_phase = U_USE, u_tries++, u_acted = false, u_act_press = act;
+                    u_hold_until = now + USE_HOLD_NS, u_retry = now + USE_TAKEN_NS;
+                    ULOG("slot %d: Y to use it (%d)%s\n", u_slot, u_tries, drawn ? ", weapon out" : "");
+                } else if (!u_blocked_since) {
+                    u_blocked_since = now;
+                    ULOG("slot %d: the game says an item can't be used now\n", u_slot);
+                } else if (now - u_blocked_since >= BLOCK_NS) {
+                    return use_end(false, "the game's own test says no", "blocked"), 0;
+                }
             }
         }
     }
@@ -286,8 +362,9 @@ static void put_hunter(Out *o, uint32_t pl, uint32_t pd, bool quest) {
             (int16_t)LD16(pl + PL_HP), (int16_t)LD16(pl + PL_HP_MAX), (int16_t)LD16(pl + PL_HP_RED),
             (double)finite_or_0(LDF(pl + PL_STAMINA)), (double)finite_or_0(LDF(pl + PL_STAMINA_MAX)),
             (int32_t)LD32(pl + PL_SHARP), (int32_t)LD32(pl + PL_SHARP_MAX));
-    put(o, ",\"x\":%.1f,\"y\":%.1f,\"z\":%.1f}", (double)finite_or_0(LDF(pl + PL_POS)),
-        (double)finite_or_0(LDF(pl + PL_POS + 4)), (double)finite_or_0(LDF(pl + PL_POS + 8)));
+    float x = LDF(pl + PL_POS), y = LDF(pl + PL_POS + 4), z = LDF(pl + PL_POS + 8);
+    if (pos_ok(x, y, z, true)) put(o, ",\"x\":%.1f,\"y\":%.1f,\"z\":%.1f", (double)x, (double)y, (double)z);  // (else none: not 0, 0, 0)
+    put(o, "}");
 }
 
 // The quest's time left, in seconds: the updates left (counting down) over the rate the game counts them at.
@@ -319,10 +396,11 @@ static void put_monsters(Out *o, uint32_t qd) {
         const char *name = id ? presence_monster_name((uint16_t)id) : NULL;
         put(o, "%s{\"id\":%u,\"name\":", n++ ? "," : "", id);
         put_str(o, name ? name : "");
-        put(o, ",\"zone\":%u,\"hp\":%d,\"hpMax\":%d,\"x\":%.1f,\"y\":%.1f,\"z\":%.1f}", LD8(en + EN_AREA),
-            hp < 0 ? 0 : hp > max ? max : hp, max,
-            (double)finite_or_0(LDF(info + INFO_POS)), (double)finite_or_0(LDF(info + INFO_POS + 4)),
-            (double)finite_or_0(LDF(info + INFO_POS + 8)));
+        put(o, ",\"zone\":%u,\"hp\":%d,\"hpMax\":%d", LD8(en + EN_AREA), hp < 0 ? 0 : hp > max ? max : hp, max);
+        float x = LDF(info + INFO_POS), y = LDF(info + INFO_POS + 4), z = LDF(info + INFO_POS + 8);
+        // (no position, not a made-up one, when the game has none that is real: the panel then says "no position")
+        if (pos_ok(x, y, z, false)) put(o, ",\"x\":%.1f,\"y\":%.1f,\"z\":%.1f", (double)x, (double)y, (double)z);
+        put(o, "}");
     }
     put(o, "]");
 }
@@ -373,9 +451,15 @@ void companion_tick(Cpu *c) {
         put_hunter(&o, pl, pd, true);
         put_monsters(&o, qd);
         put_items(&o, c, pl);
-        if (u_slot >= 0)
-            put(&o, ",\"using\":%d,\"step\":\"%s\"", u_slot,  // (waiting for the hunter after the weapon is away is still sheathing)
-                u_phase == U_SHEATHE || (u_phase == U_WAIT && u_after_sheathe) ? "sheathe" : u_phase == U_USE ? "use" : "wait");
+        refresh_pins();
+        put_pins(&o);
+        if (u_slot >= 0) {
+            const char *step = u_phase == U_SHEATHE || (u_phase == U_WAIT && u_after_sheathe) ? "sheathe" : u_phase == U_USE ? "use" : "wait";
+            put(&o, ",\"using\":%d,\"step\":\"%s\"", u_slot, step);  // (waiting for the hunter after the weapon is away is still sheathing)
+            if (u_phase == U_WAIT && !u_after_sheathe) put(&o, ",\"waitFor\":\"%s\"", u_wait_for ? "bar" : "hunter");
+        }
+        if (u_res.slot >= 0 && now < u_res.until)
+            put(&o, ",\"result\":{\"slot\":%d,\"ok\":%s,\"why\":\"%s\"}", u_res.slot, u_res.ok ? "true" : "false", u_res.why);
     } else {
         put(&o, ",\"place\":\"town\",\"town\":%u", town);
         put_hunter(&o, pl, pd, false);

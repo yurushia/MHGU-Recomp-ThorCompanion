@@ -8,6 +8,9 @@ in the unsaved-changes confirmation when leaving the menu. Menu Options also con
 on the title screen's Main Menu opens that Exit question, as closing the window does. The panel is attached on
 every opening; detach allows dragging, and Move menu works with the controller.
 
+On Android there are two more tabs: Android (files folders, save, game files, mods, the Update now button) and **Duo Companion**
+(the second screen's panel: the pinned items; docs/THOR-COMPANION.md).
+
 Shoulder glyphs bracket the tab labels at the top. The tab header stays pinned
 inside the panel, remains clickable while scrolled and never overlaps option
 selection. Only the options/actions between the header and hints scroll. The bottom guide labels

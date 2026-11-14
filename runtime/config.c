@@ -606,7 +606,15 @@ static const char DEFAULT_INI[] =
     "; Android only. The folder holding the game's exefs and romfs folders, used where it is (for example on a USB drive or SD\n"
     "; card), so they don't have to fit in the app's own folder. Empty: the data folder in the app's own folder. Set it with\n"
     "; Game files folder in the settings menu (Android tab): the app needs Android's \"All files access\". Takes effect at the next start\n"
-    "GameFolder =\n";
+    "GameFolder =\n"
+    "\n"
+    "[Companion]\n"
+    "; Android, a second screen (AYN Thor). The items pinned to the first page of the companion panel's item menu: item numbers\n"
+    "; (9 is a Potion) in a comma separated list, at most 8, shown in this order; the other items follow on the pages after. Set\n"
+    "; them in the settings menu (Duo Companion tab). Empty: nothing pinned\n"
+    "PinnedItems =\n";
+
+const char *config_companion_pins(void) { return g_config.companion_pins; }
 
 void config_path(char *buf, size_t size) {
     const char *e = getenv("MHGU_CONFIG");
@@ -797,6 +805,7 @@ const ConfigSetting g_settings[] = {
     {"Multiplayer", "Port", SET_INT, F(ldn_port), 0, 1, 65535, NULL, NULL, false, ERR_NET},
     {"Android", "SaveFolder", SET_TEXT, F(save_dir), sizeof g_config.save_dir, 0, 0, NULL, NULL, true, ERR_FOLDER},
     {"Android", "GameFolder", SET_TEXT, F(game_dir), sizeof g_config.game_dir, 0, 0, NULL, NULL, true, ERR_GAME_FOLDER},
+    {"Companion", "PinnedItems", SET_TEXT, F(companion_pins), sizeof g_config.companion_pins, 0, 0, NULL, NULL, false, ERR_MISC},
     {"Multiplayer", "Join", SET_TEXT, F(ldn_join), sizeof g_config.ldn_join, 0, 0, NULL, NULL, false, ERR_NET},
     {"Multiplayer", "Server", SET_TEXT, F(ldn_server), sizeof g_config.ldn_server, 0, 0, NULL, NULL, false, ERR_SERVER},
     {"Multiplayer", "Key", SET_TEXT, F(ldn_key), sizeof g_config.ldn_key, 0, 0, NULL, NULL, false, ERR_SERVER},

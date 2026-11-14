@@ -36,14 +36,15 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
 import java.util.Locale;
 
 final class CompanionView extends View {
     private static final float W = 1240, H = 1080, M = 28;  // (M: the margin round the sheet)
     // The item pouch: two rows of four buttons, eight to a page
     static final int COLS = 4, ROWS = 2, PER_PAGE = COLS * ROWS;
-    private static final float POUCH_X = M, POUCH_Y = 582, POUCH_W = W - 2 * M, POUCH_H = 470;
-    private static final float ARROW_W = 70, GRID_X = M + ARROW_W, GRID_W = W - 2 * M - 2 * ARROW_W, GRID_TOP = POUCH_Y + 16,
+    private static final float POUCH_X = M, POUCH_Y = 582, POUCH_W = W - 2 * M, POUCH_H = 470, STRIP_H = 38;  // (STRIP_H: the line above the buttons that says what is going on)
+    private static final float ARROW_W = 70, GRID_X = M + ARROW_W, GRID_W = W - 2 * M - 2 * ARROW_W, GRID_TOP = POUCH_Y + 12 + STRIP_H,
             GRID_BOTTOM = POUCH_Y + POUCH_H - 14, CELL_GAP = 12, POUCH_TOP = POUCH_Y;
     private static final float CELL_W = (GRID_W - CELL_GAP * (COLS - 1)) / COLS;
     private static final float CELL_H = (GRID_BOTTOM - GRID_TOP - CELL_GAP * (ROWS - 1)) / ROWS;
@@ -54,8 +55,8 @@ final class CompanionView extends View {
     // Touch: how far a finger may wander and still be a tap, from where a swipe starts, how far (or how fast) it has to go
     private static final float TAP_SLOP = 30, SWIPE_SLOP = 36, SWIPE_COMMIT = 110, FLING_MIN = 55;
     private static final long FLING_MS = 350, ANIM_MS = 170;
-    // The map when zoomed: how much of the area (world units across) the panel shows round the hunter
-    private static final float ZOOM_SPAN = 3200;
+    // The map: the zoom steps (1 is the whole area), and its three buttons (zoom in, zoom out, back to the hunter)
+    private static final float ZOOM_MAX = 16, BTN = 36;
 
     private static final int GROUND = 0xff26231d, STONE_TOP = 0xffb9b29f, STONE_BOT = 0xffa59d89, LIGHT = 0xffece6d2, EDGE = 0xff7d7665,
             INK = 0xff2b261c, INK_SOFT = 0xff5a5342, CREAM = 0xfff1e8cc, GOLD = 0xfff2c22c, PLATE = 0xff101010, GREEN_TOP = 0xffb8e25c,
@@ -87,6 +88,7 @@ final class CompanionView extends View {
     private final RectF rect = new RectF();
     private final Typeface light, medium, semi;
     private String last = "";
+    private String message = "";
     private JSONObject state;
 
     // The map: the area being shown (loaded in the background), the ground's pieces something has stood on, the paths drawn
@@ -97,9 +99,15 @@ final class CompanionView extends View {
     private boolean[] seen;
     private boolean pathsDirty = true;
     private final Path hills = new Path(), floor = new Path(), pond = new Path();
-    private boolean mapZoom;
+    private float mapZoom = 1;       // 1: the whole area; 2, 4, 8, 16: closer, on the hunter (follow) or where it was dragged to
+    private boolean mapFollow = true;
+    private float panX, panZ;        // the world point at the middle of the map when it is not following the hunter
+    private float mapScale = 1, mapCx, mapCz;  // as last drawn: pixels to a world unit, and the world point at the middle
+    private boolean mapLive;         // a drawn area (not the radar) that can be dragged
 
     // The pouch's page, and a swipe or the slide to a page: drag is how far the pages are shifted, in sheet pixels
+    private long useWatchSince;      // when the use now shown began (a use that takes too long is said to)
+    private int useWatchSlot = -1;
     private int page, pageCount = 1;
     private float drag;
     private boolean animating;
@@ -111,7 +119,9 @@ final class CompanionView extends View {
     private final int[] cellSlots = new int[PER_PAGE];
     private int cellCount;
     // The touch in progress
-    private boolean tracking, swiping, mapTouch;
+    private boolean tracking, swiping, mapTouch, mapDrag;
+    private int mapButton = -1;
+    private float panStartX, panStartZ;
     private float downX, downY;
     private long downTime;
     private int pressed = -1;
@@ -152,9 +162,22 @@ final class CompanionView extends View {
         return page;
     }
 
+    /** What the line above the pouch's buttons said when last drawn (what a tap is doing, or why it did not work), for the tests. */
+    String message() {
+        return message;
+    }
+
+    float zoomLevel() {
+        return mapZoom;
+    }
+
+    boolean following() {
+        return mapFollow;
+    }
+
     /** Whether the map is zoomed in on the hunter, for the tests. */
     boolean zoomed() {
-        return mapZoom;
+        return mapZoom > 1.001f;
     }
 
     private static String at(String[] names, int i) {
@@ -588,15 +611,28 @@ final class CompanionView extends View {
         }
     }
 
+    // The triangles of the pieces marked `wanted` in `which` (all when null) as one path. Every triangle is wound the same way: a path
+    // is filled with the non-zero rule, where overlapping triangles wound opposite ways cancel out and leave holes (half of one
+    // area's ground was missing that way).
     private void triangles(Path p, AreaMap.Mesh m, boolean[] which, boolean wanted) {
         p.rewind();
         for (int i = 0; i < m.count(); i++) {
             if (which != null && which[m.comp[i]] != wanted) continue;
             int o = i * 6;
-            p.moveTo(m.xz[o], m.xz[o + 1]);
-            p.lineTo(m.xz[o + 2], m.xz[o + 3]);
-            p.lineTo(m.xz[o + 4], m.xz[o + 5]);
+            float[] t = m.xz;
+            boolean flip = (t[o + 2] - t[o]) * (t[o + 5] - t[o + 1]) - (t[o + 4] - t[o]) * (t[o + 3] - t[o + 1]) < 0;
+            p.moveTo(t[o], t[o + 1]);
+            p.lineTo(t[flip ? o + 4 : o + 2], t[flip ? o + 5 : o + 3]);
+            p.lineTo(t[flip ? o + 2 : o + 4], t[flip ? o + 3 : o + 5]);
             p.close();
+        }
+    }
+
+    private void lines(Path p, float[] w) {
+        p.rewind();
+        for (int i = 0; i + 3 < w.length; i += 4) {
+            p.moveTo(w[i], w[i + 1]);
+            p.lineTo(w[i + 2], w[i + 3]);
         }
     }
 
@@ -609,9 +645,53 @@ final class CompanionView extends View {
         c.drawPath(p, mapLine);
     }
 
+    // The map's three buttons, in the panel's top right corner: 0 zoom in, 1 zoom out, 2 back on the hunter
+    private static float buttonX() {
+        return MAP_X + MAP_W - 12 - 8 - BTN;
+    }
+
+    private static float buttonY(int i) {
+        return MAP_Y + 12 + 8 + i * (BTN + 6);
+    }
+
+    private static int mapButtonAt(float x, float y) {
+        for (int i = 0; i < 3; i++)
+            if (x >= buttonX() && x < buttonX() + BTN && y >= buttonY(i) && y < buttonY(i) + BTN) return i;
+        return -1;
+    }
+
+    private boolean mapButtonOn(int i, boolean haveHunter) {
+        return i == 0 ? mapLive && mapZoom < ZOOM_MAX : i == 1 ? mapLive && mapZoom > 1.001f : mapLive && haveHunter;
+    }
+
+    private void mapButtons(Canvas c, boolean haveHunter) {
+        for (int i = 0; i < 3; i++) {
+            boolean on = mapButtonOn(i, haveHunter);
+            float x = buttonX(), y = buttonY(i);
+            rect.set(x, y, x + BTN, y + BTN);
+            fill.setColor(on ? 0xd9161410 : 0x80161410);
+            c.drawRoundRect(rect, 8, 8, fill);
+            stroke.setColor(alpha(LIGHT, on ? 0.9f : 0.35f));
+            stroke.setStrokeWidth(2);
+            c.drawRoundRect(rect, 8, 8, stroke);
+            int col = on ? 0xffffffff : 0x66ffffff;
+            if (i == 2) {
+                stroke.setColor(col);
+                c.drawCircle(x + BTN / 2, y + BTN / 2, 9, stroke);
+                fill.setColor(col);
+                c.drawCircle(x + BTN / 2, y + BTN / 2, 3.5f, fill);
+            } else {
+                stroke.setColor(col);
+                stroke.setStrokeWidth(3.5f);
+                c.drawLine(x + 10, y + BTN / 2, x + BTN - 10, y + BTN / 2, stroke);
+                if (i == 0) c.drawLine(x + BTN / 2, y + 10, x + BTN / 2, y + BTN - 10, stroke);
+            }
+        }
+    }
+
     private void map(Canvas c, int stageNo, int zone, JSONObject h, JSONArray mons) {
         stone(c, MAP_X, MAP_Y, MAP_W, MAP_H);
-        // the area being shown: read in the background when the hunter's zone changes
+        // the area being shown: read in the background when the hunter's zone changes (or again if the game folder became known)
         int key = zone >= 0 && zone < 100 && stageNo > 0 ? stageNo * 100 + zone : -1;
         if (key != areaKey || (key >= 0 && areaState == 2 && AreaMap.root != areaRoot)) {
             areaKey = key;
@@ -619,6 +699,8 @@ final class CompanionView extends View {
             area = null;
             seen = null;
             pathsDirty = true;
+            mapZoom = 1;
+            mapFollow = true;
             areaState = key < 0 ? 2 : 0;
             if (key >= 0) {
                 final int st = stageNo, zn = zone, k = key;
@@ -641,20 +723,29 @@ final class CompanionView extends View {
         c.clipRect(ix, iy, ix + iw, iy + ih);
         fill.setColor(0xff3b372d);
         c.drawRect(ix, iy, ix + iw, iy + ih, fill);
-        double hx = h != null ? h.optDouble("x") : 0, hy = h != null ? h.optDouble("y") : 0, hz = h != null ? h.optDouble("z") : 0;
-        boolean haveHunter = h != null && h.has("x");
-        // the monsters of the hunter's area (their positions are in that area's own coordinates)
-        int n = mons != null ? Math.min(mons.length(), 4) : 0;
+        // Where everything is, as the game reports it. A position that is not there is not made up: the hunter and the monsters
+        // without one are left off the map and said so below. A monster of another area is in that area's own coordinates, so it
+        // is left off too, and its card says which area it is in.
+        boolean haveHunter = h != null && h.has("x") && h.has("z");
+        double hx = haveHunter ? h.optDouble("x") : 0, hy = haveHunter ? h.optDouble("y") : 0, hz = haveHunter ? h.optDouble("z") : 0;
+        int n = mons != null ? Math.min(mons.length(), 4) : 0, plotted = 0, elsewhere = 0, noPosition = 0;
         double[][] at = new double[n][];
         for (int i = 0; i < n; i++) {
             JSONObject m = mons.optJSONObject(i);
-            if (m == null || !m.has("x")) continue;
-            if (m.optInt("zone", zone) != zone || m.optInt("hp") <= 0) continue;
-            at[i] = new double[] {m.optDouble("x"), m.optDouble("y"), m.optDouble("z")};
+            if (m == null || m.optInt("hp") <= 0) continue;
+            if (!m.has("x") || !m.has("z")) {
+                noPosition++;
+            } else if (m.optInt("zone", zone) != zone) {
+                elsewhere++;
+            } else {
+                at[i] = new double[] {m.optDouble("x"), m.optDouble("y"), m.optDouble("z")};
+                plotted++;
+            }
         }
         AreaMap a = area;
         float cx = ix + iw / 2, cy = iy + ih / 2, sc;
         double wx, wz;
+        mapLive = a != null;
         if (a != null) {
             if (seen == null || seen.length != a.ground.pieces) {
                 seen = new boolean[a.ground.pieces];
@@ -666,28 +757,31 @@ final class CompanionView extends View {
             if (pathsDirty) {
                 triangles(floor, a.ground, seen, true);
                 triangles(hills, a.ground, seen, false);
-                triangles(pond, a.water, null, true);
+                lines(pond, a.walls);
                 pathsDirty = false;
             }
-            boolean any = false;
-            for (boolean b : seen) any |= b;
-            float[] b = any ? AreaMap.bounds(a.ground, seen) : new float[] {a.minX, a.maxX, a.minZ, a.maxZ};
-            if (mapZoom && haveHunter) {
-                sc = iw / ZOOM_SPAN;
+            // The whole area, always: its full extent sets the zoom 1, whatever has been stood on
+            float spanX = Math.max(1, a.maxX - a.minX) * 1.06f, spanZ = Math.max(1, a.maxZ - a.minZ) * 1.06f;
+            float fit = Math.min(iw / spanX, ih / spanZ);
+            sc = fit * mapZoom;
+            if (mapZoom <= 1.001f) {
+                wx = (a.minX + a.maxX) / 2;
+                wz = (a.minZ + a.maxZ) / 2;
+            } else if (mapFollow && haveHunter) {
                 wx = hx;
                 wz = hz;
             } else {
-                float spanX = Math.max(1, b[1] - b[0]) * 1.1f, spanZ = Math.max(1, b[3] - b[2]) * 1.1f;
-                sc = Math.min(iw / spanX, ih / spanZ);
-                wx = (b[0] + b[1]) / 2;
-                wz = (b[2] + b[3]) / 2;
+                wx = Math.max(a.minX, Math.min(a.maxX, panX));
+                wz = Math.max(a.minZ, Math.min(a.maxZ, panZ));
             }
             c.save();
             c.translate(cx - (float) wx * sc, cy - (float) wz * sc);
             c.scale(sc, sc);
-            layer(c, pond, 0xff7fa9c8, sc);
-            layer(c, hills, 0xff5d584a, sc);
-            layer(c, floor, 0xffe2d8b8, sc);
+            layer(c, hills, 0xff8c8670, sc);   // (ground nothing has stood on: other levels, the land round the area)
+            layer(c, floor, 0xffe2d8b8, sc);   // (ground the hunter or a monster has been on)
+            mapLine.setColor(0xff4d3b27);      // (walls: cliffs, rocks)
+            mapLine.setStrokeWidth(1.6f / sc);
+            c.drawPath(pond, mapLine);
             c.restore();
         } else {
             // no map (loading, or no game files to read it from): the hunter in the middle and what is near
@@ -702,8 +796,10 @@ final class CompanionView extends View {
             stroke.setStrokeWidth(2);
             c.drawCircle(cx, cy, Math.min(iw, ih) / 2 * 0.88f, stroke);
             c.drawCircle(cx, cy, Math.min(iw, ih) / 4 * 0.88f, stroke);
-            if (areaState == 0) label(c, "reading the map...", ix + iw - 14, iy + ih - 12, 20, 0x99ffffff, medium, Paint.Align.RIGHT, 0.05f, 0);
         }
+        mapScale = sc;
+        mapCx = (float) wx;
+        mapCz = (float) wz;
         // the monsters, then the hunter on top
         for (int i = 0; i < n; i++) {
             if (at[i] == null) continue;
@@ -715,17 +811,32 @@ final class CompanionView extends View {
         }
         if (haveHunter) {
             float sx = cx + (float) (hx - wx) * sc, sy = cy + (float) (hz - wz) * sc;
+            boolean out = sx < ix + 12 || sx > ix + iw - 12 || sy < iy + 12 || sy > iy + ih - 12;
             sx = Math.max(ix + 12, Math.min(ix + iw - 12, sx));
             sy = Math.max(iy + 12, Math.min(iy + ih - 12, sy));
             fill.setColor(0xffffffff);
-            c.drawCircle(sx, sy, 13, fill);
+            c.drawCircle(sx, sy, out ? 10 : 13, fill);
             fill.setColor(RED);
-            c.drawCircle(sx, sy, 9, fill);
+            c.drawCircle(sx, sy, out ? 7 : 9, fill);
         }
+        // what the map is showing, in a few words: the zoom, and anything that is not as it should be
+        String hint = areaState == 0 ? "READING THE MAP..." : a == null ? (AreaMap.root == null ? "RADAR: GAME FILES NOT FOUND" : "RADAR: NO MAP DATA FOR THIS AREA")
+            : mapZoom > 1.001f ? "X" + Math.round(mapZoom) + (mapFollow ? "  ·  FOLLOWING" : "  ·  DRAG TO MOVE") : "";
+        label(c, hint, ix + 12, iy + 24, 18, a == null && areaState != 0 ? 0xffffc94d : 0xb3ffffff, medium, Paint.Align.LEFT, 0.1f, iw - 70);
+        mapButtons(c, haveHunter);
         c.restore();
         label(c, zone == 0 ? "CAMP" : zone > 0 ? "AREA " + zone : "", MAP_X + 22, MAP_Y + MAP_H - 20, 24, 0xffffffff, semi,
               Paint.Align.LEFT, 0.1f, 0);
-        label(c, mapZoom ? "TAP: WHOLE AREA" : "TAP: ZOOM", MAP_X + MAP_W - 22, MAP_Y + 34, 18, 0x99ffffff, medium, Paint.Align.RIGHT, 0.12f, 0);
+        StringBuilder status = new StringBuilder();
+        if (!haveHunter) status.append("NO HUNTER POSITION");
+        else if (n == 0) status.append("NO LARGE MONSTER");
+        else {
+            status.append(plotted).append(plotted == 1 ? " MONSTER ON MAP" : " MONSTERS ON MAP");
+            if (elsewhere > 0) status.append("  ·  ").append(elsewhere).append(" IN ANOTHER AREA");
+            if (noPosition > 0) status.append("  ·  ").append(noPosition).append(" WITH NO POSITION");
+        }
+        label(c, status.toString(), MAP_X + MAP_W - 22, MAP_Y + MAP_H - 20, 19, !haveHunter || noPosition > 0 ? 0xfff9d77a : 0xe6ffffff, semi,
+              Paint.Align.RIGHT, 0.08f, MAP_W - 150);
     }
 
     private void monsterMarker(Canvas c, float x, float y, int number, JSONObject m, boolean out) {
@@ -781,8 +892,10 @@ final class CompanionView extends View {
         c.drawCircle(ix + 6, iy + 6, br, fill);
         label(c, String.valueOf(number), ix + 6, iy + 6 + br * 0.38f, br * 1.2f, 0xffffffff, semi, Paint.Align.CENTER, 0, 0);
         if (!compact) {
-            String where = zone == 0 ? "CAMP" : zone > 0 ? "AREA " + zone : "";
-            label(c, where, ix + ic / 2, iy + ic - 10, 20, zone == hunterZone ? GOLD : 0xffa9a28c, semi, Paint.Align.CENTER, 0.12f, ic - 8);
+            boolean located = m.has("x") && m.has("z");  // (a monster the game gave no position for says so: it is not on the map)
+            String where = !located ? "NO POSITION" : zone == 0 ? "CAMP" : zone > 0 ? "AREA " + zone : "";
+            label(c, where, ix + ic / 2, iy + ic - 10, located ? 20 : 17, !located ? 0xfff9d77a : zone == hunterZone ? GOLD : 0xffa9a28c, semi,
+                  Paint.Align.CENTER, 0.1f, ic - 6);
         }
         float tx = ix + ic + (compact ? 18 : 24), tw = x + w - 22 - tx;
         float bh = compact ? 16 : 22;
@@ -818,6 +931,60 @@ final class CompanionView extends View {
 
     // ---- the item pouch
 
+    // One place of the item menu: an item that can be used, or a pinned item that is not in the pouch now (kept in its place, dimmed)
+    static final class Place {
+        int slot = -1, id, n;
+        String name = "";
+        boolean pinned, gone, selected;
+    }
+
+    private static String itemName(JSONObject o) {
+        return o.optString("name").isEmpty() ? "Item " + o.optInt("id") : o.optString("name");
+    }
+
+    // The pinned items first, in their order (a pinned item that is not in the pouch holds its place, as "gone"), then the rest of the
+    // item bar in its own order. At most a page's worth are pinned (what the reader sends is cut to it here too).
+    static ArrayList<Place> arrange(JSONArray items, JSONArray pins) {
+        ArrayList<Place> out = new ArrayList<>();
+        int count = items != null ? items.length() : 0;
+        if (count == 0) return out;
+        boolean[] used = new boolean[count];
+        for (int i = 0; pins != null && i < pins.length() && i < PER_PAGE; i++) {
+            JSONObject pin = pins.optJSONObject(i);
+            if (pin == null) continue;
+            int id = pin.optInt("id");
+            Place pl = new Place();
+            pl.pinned = true;
+            pl.id = id;
+            pl.name = pin.optString("name").isEmpty() ? "Item " + id : pin.optString("name");
+            pl.gone = true;
+            for (int k = 0; k < count; k++) {
+                JSONObject it = items.optJSONObject(k);
+                if (used[k] || it == null || it.optInt("id") != id) continue;
+                used[k] = true;
+                pl.slot = it.optInt("slot", -1);
+                pl.n = it.optInt("n");
+                pl.name = itemName(it);
+                pl.selected = it.optBoolean("sel");
+                pl.gone = pl.n <= 0;
+                break;
+            }
+            out.add(pl);
+        }
+        for (int k = 0; k < count; k++) {
+            JSONObject it = items.optJSONObject(k);
+            if (used[k] || it == null) continue;
+            Place pl = new Place();
+            pl.slot = it.optInt("slot", -1);
+            pl.id = it.optInt("id");
+            pl.n = it.optInt("n");
+            pl.name = itemName(it);
+            pl.selected = it.optBoolean("sel");
+            out.add(pl);
+        }
+        return out;
+    }
+
     private float cellX(int col, float shift) {
         return GRID_X + col * (CELL_W + CELL_GAP) + shift;
     }
@@ -826,36 +993,85 @@ final class CompanionView extends View {
         return GRID_TOP + row * (CELL_H + CELL_GAP);
     }
 
+    private static String nameOfSlot(ArrayList<Place> places, int slot) {
+        for (Place p : places)
+            if (p.slot == slot) return p.name;
+        return "the item";
+    }
+
+    // The line above the buttons: where in the menu, and what the last tap is doing or why it did not work. Returns nothing: draws it.
+    private void strip(Canvas c, JSONObject s, ArrayList<Place> places) {
+        float y = POUCH_Y + 12, h = STRIP_H;
+        int pinned = 0;
+        for (Place p : places) pinned += p.pinned ? 1 : 0;
+        String left = places.isEmpty() ? "ITEM POUCH" : "PAGE " + (page + 1) + " / " + pageCount + (pinned > 0 ? "   ·   " + pinned + " PINNED" : "");
+        label(c, left, GRID_X + 4, y + 27, 20, INK_SOFT, semi, Paint.Align.LEFT, 0.14f, 330);
+        int using = s.optInt("using", -1);
+        JSONObject result = s.optJSONObject("result");
+        String msg = null;
+        int color = INK;
+        if (using >= 0) {
+            long now = System.nanoTime();
+            if (using != useWatchSlot) {
+                useWatchSlot = using;
+                useWatchSince = now;
+            }
+            String name = nameOfSlot(places, using), step = s.optString("step"), waitFor = s.optString("waitFor");
+            if (now - useWatchSince > 12000000000L) {  // (the reader gives up by itself after ten seconds: this is it not answering)
+                msg = "Still waiting: the game isn't answering. Tap " + name + " to try again.";
+                color = 0xff9a5a00;
+            } else {
+                msg = "sheathe".equals(step) ? "Putting the weapon away to use " + name + "..."
+                    : "use".equals(step) ? "Using " + name + "..."
+                    : "bar".equals(waitFor) ? "Waiting for the game to allow " + name + "..." : "Waiting for the hunter to be free to use " + name + "...";
+                color = 0xff5a4300;
+            }
+        } else {
+            useWatchSlot = -1;
+            if (result != null) {
+                String name = nameOfSlot(places, result.optInt("slot", -1)), why = result.optString("why");
+                if (result.optBoolean("ok")) {
+                    msg = "Used " + name + ".";
+                    color = 0xff1f6a2a;
+                } else {
+                    msg = "blocked".equals(why) ? "Couldn't use " + name + ": the game won't allow it right now. Tap it to try again."
+                        : "ignored".equals(why) ? "The game didn't take the button for " + name + ". Tap it to try again."
+                        : "sheathe".equals(why) ? "The weapon wouldn't go away for " + name + ". Tap it to try again."
+                        : "empty".equals(why) ? "No " + name + " left."
+                        : "Timed out using " + name + ". Tap it to try again.";
+                    color = 0xff9c1b10;
+                }
+            }
+        }
+        message = msg != null ? msg : "";
+        if (msg != null) label(c, msg, POUCH_X + POUCH_W - ARROW_W - 8, y + 27, 22, color, semi, Paint.Align.RIGHT, 0.02f, POUCH_W - ARROW_W * 2 - 380);
+    }
+
     private void pouch(Canvas c, JSONObject s) {
         stone(c, POUCH_X, POUCH_Y, POUCH_W, POUCH_H);
-        JSONArray items = s.optJSONArray("items");
-        int count = items != null ? items.length() : 0;
+        ArrayList<Place> places = arrange(s.optJSONArray("items"), s.optJSONArray("pins"));
+        int count = places.size();
         pageCount = Math.max(1, (count + PER_PAGE - 1) / PER_PAGE);
         if (page >= pageCount) page = pageCount - 1;
         if (animating) step();
-        float ay = POUCH_Y + POUCH_H / 2 - 10;
+        float ay = POUCH_Y + POUCH_H / 2 + 12;
         arrow(c, POUCH_X + ARROW_W / 2 + 4, ay, -1, page > 0);
         arrow(c, POUCH_X + POUCH_W - ARROW_W / 2 - 4, ay, 1, page < pageCount - 1);
-        if (pageCount > 1) {
-            String pg = (page + 1) + " / " + pageCount;
-            label(c, pg, POUCH_X + ARROW_W / 2 + 4, ay + 92, 24, INK_SOFT, semi, Paint.Align.CENTER, 0.06f, 0);
-            label(c, pg, POUCH_X + POUCH_W - ARROW_W / 2 - 4, ay + 92, 24, INK_SOFT, semi, Paint.Align.CENTER, 0.06f, 0);
-        }
+        strip(c, s, places);
         if (count == 0) {
-            label(c, "Nothing on the item bar", W / 2, POUCH_Y + POUCH_H / 2 + 10, 36, INK_SOFT, medium, Paint.Align.CENTER, 0.06f, 0);
+            label(c, "Nothing on the item bar", W / 2, POUCH_Y + POUCH_H / 2 + 22, 36, INK_SOFT, medium, Paint.Align.CENTER, 0.06f, 0);
             return;
         }
         int using = s.optInt("using", -1);
         String step = s.optString("step");
+        JSONObject result = s.optJSONObject("result");
         c.save();
         c.clipRect(GRID_X - 6, GRID_TOP - 8, GRID_X + GRID_W + 6, GRID_BOTTOM + 8);  // (a page slides in from the arrow, not out over the rest)
         for (int p = Math.max(0, page - 1); p <= Math.min(pageCount - 1, page + 1); p++) {
             float shift = (p - page) * W + drag;
             if (shift <= -W || shift >= W) continue;
-            for (int i = 0; i < PER_PAGE && p * PER_PAGE + i < count; i++) {
-                JSONObject it = items.optJSONObject(p * PER_PAGE + i);
-                if (it != null) button(c, it, cellX(i % COLS, shift), cellY(i / COLS), p == page ? i : -1, using, step);
-            }
+            for (int i = 0; i < PER_PAGE && p * PER_PAGE + i < count; i++)
+                button(c, places.get(p * PER_PAGE + i), cellX(i % COLS, shift), cellY(i / COLS), p == page ? i : -1, using, step, result);
         }
         c.restore();
     }
@@ -883,60 +1099,84 @@ final class CompanionView extends View {
         path.close();
     }
 
-    // One button. index >= 0: of the page shown, so a touch can find it.
-    private void button(Canvas c, JSONObject it, float x, float y, int index, int using, String step) {
+    // One button. index >= 0: of the page shown, so a touch can find it (only an item that can be used is found: not a pinned
+    // one that is not in the pouch now).
+    private void button(Canvas c, Place pl, float x, float y, int index, int using, String step, JSONObject result) {
         float w = CELL_W, h = CELL_H;
-        int slot = it.optInt("slot", -1);
-        boolean selected = it.optBoolean("sel"), busy = slot >= 0 && slot == using, down = slot >= 0 && slot == pressed;
-        if (index >= 0 && slot >= 0) {
-            cells[index].set(x, y, x + w, y + h);
-            cellSlots[index] = slot;
+        int slot = pl.slot;
+        boolean usable = slot >= 0 && !pl.gone;
+        if (index >= 0) {
+            if (usable) cells[index].set(x, y, x + w, y + h);
+            else cells[index].set(0, 0, 0, 0);
+            cellSlots[index] = usable ? slot : -1;
             cellCount = Math.max(cellCount, index + 1);
         }
-        boolean lit = selected || busy;
+        boolean busy = usable && slot == using, down = usable && slot == pressed;
+        boolean ended = usable && using < 0 && result != null && result.optInt("slot", -2) == slot;
+        boolean failed = ended && !result.optBoolean("ok"), worked = ended && result.optBoolean("ok");
+        boolean lit = (pl.selected && !pl.gone) || busy || worked;
+        int rim0 = 0xfff2c22c, rim1 = 0xffa8800f;
         frame(x, y, w, h, 20, 0);
-        if (lit) {
-            c.save();
+        if (failed) {
+            fill.setShader(new LinearGradient(x, y, x + w, y + h, 0xffff7a66, 0xffb3281a, Shader.TileMode.CLAMP));
+            fill.setShadowLayer(14, 0, 0, 0xb3ff5040);
+        } else if (lit) {
             fill.setShader(new LinearGradient(x, y, x + w, y + h, 0xff7dfff0, 0xfff2f27a, Shader.TileMode.CLAMP));
             fill.setShadowLayer(14, 0, 0, 0xb382ffe6);
         } else {
-            fill.setShader(new LinearGradient(x, y, x + w, y + h, 0xfff2c22c, 0xffa8800f, Shader.TileMode.CLAMP));
+            fill.setShader(new LinearGradient(x, y, x + w, y + h, pl.gone ? 0x99f2c22c : rim0, pl.gone ? 0x99a8800f : rim1, Shader.TileMode.CLAMP));
         }
         c.drawPath(path, fill);
         fill.clearShadowLayer();
         fill.setShader(null);
-        if (lit) c.restore();
         frame(x, y, w, h, 20, 4);
-        fill.setColor(down ? 0xff2a2a26 : 0xff0c0c0b);
+        fill.setColor(down ? 0xff2a2a26 : pl.gone ? 0xff131311 : 0xff0c0c0b);
         c.drawPath(path, fill);
         frame(x, y, w, h, 20, 10);
-        stroke.setColor(alpha(GOLD, 0.45f));
+        stroke.setColor(alpha(failed ? 0xffff7a66 : GOLD, pl.gone ? 0.25f : 0.45f));
         stroke.setStrokeWidth(2);
         c.drawPath(path, stroke);
-        // the icon in its tile, in its kind's colour
-        String name = it.optString("name").isEmpty() ? "Item " + it.optInt("id") : it.optString("name");
-        int[] kind = kindOf(name);
-        int color = KIND_COLORS[kind[1]];
-        float tile = 84, tx = x + w / 2 - tile / 2, ty = y + 26;
+        // the icon in its tile, in its kind's colour (dimmed for a pinned item that is not in the pouch)
+        int[] kind = kindOf(pl.name);
+        int color = pl.gone ? alpha(KIND_COLORS[kind[1]], 0.4f) : KIND_COLORS[kind[1]];
+        float tile = 84, tx = x + w / 2 - tile / 2, ty = y + 22;
         rect.set(tx, ty, tx + tile, ty + tile);
-        shader(ty, ty + tile, 0xff17332d, 0xff0c1a17);
+        shader(ty, ty + tile, pl.gone ? 0xff111716 : 0xff17332d, pl.gone ? 0xff0b0f0e : 0xff0c1a17);
         c.drawRoundRect(rect, 18, 18, fill);
         fill.setShader(null);
         stroke.setColor(color);
         stroke.setStrokeWidth(3);
         c.drawRoundRect(rect, 18, 18, stroke);
         glyph(c, kind[0], tx + 16, ty + 16, 52, color);
+        if (pl.pinned) {  // a pin in the corner
+            float px = x + 34, py = y + 36;
+            fill.setColor(pl.gone ? 0x99f2c22c : GOLD);
+            c.drawCircle(px, py, 9, fill);
+            stroke.setColor(pl.gone ? 0x99f2c22c : GOLD);
+            stroke.setStrokeWidth(3);
+            c.drawLine(px, py + 6, px - 6, py + 22, stroke);
+            fill.setColor(0xff0c0c0b);
+            c.drawCircle(px - 2.5f, py - 2.5f, 2.5f, fill);
+        }
         // the number, top right
-        String n = String.valueOf(it.optInt("n"));
-        float nw = label(c, n, x + w - 24, y + 56, 44, 0xffffffff, semi, Paint.Align.RIGHT, 0, 0);
+        String n = String.valueOf(pl.n);
+        int nc = pl.gone ? 0x99ffffff : 0xffffffff;
+        float nw = label(c, n, x + w - 24, y + 56, 44, nc, semi, Paint.Align.RIGHT, 0, 0);
         label(c, "×", x + w - 24 - nw - 3, y + 54, 24, 0xb3ffffff, medium, Paint.Align.RIGHT, 0, 0);
-        // the name on a ribbon, or what the touch is doing
+        // the name on a ribbon, or what the touch is doing, or why it did not work
         float px = x + 16, pw = w - 32, py = y + h - 54;
         plate(c, px, py, pw, 36);
-        if (busy)
-            label(c, "sheathe".equals(step) ? "SHEATHING" : "wait".equals(step) ? "WAITING" : "USING", px + pw / 2, py + 26, 21, GOLD, semi,
-                  Paint.Align.CENTER, 0.14f, pw - 50);
-        else label(c, name, px + pw / 2, py + 26, 23, CREAM, semi, Paint.Align.CENTER, 0.03f, pw - 50);
+        String waitFor = state != null ? state.optString("waitFor") : "";
+        if (busy) {
+            label(c, "sheathe".equals(step) ? "SHEATHING" : "use".equals(step) ? "USING" : "bar".equals(waitFor) ? "WAITING FOR GAME" : "WAITING FOR HUNTER",
+                  px + pw / 2, py + 26, 20, GOLD, semi, Paint.Align.CENTER, 0.1f, pw - 40);
+        } else if (failed) {
+            label(c, "TAP TO RETRY", px + pw / 2, py + 26, 21, 0xffff8a7a, semi, Paint.Align.CENTER, 0.14f, pw - 40);
+        } else if (worked) {
+            label(c, "USED", px + pw / 2, py + 26, 21, 0xff9affb0, semi, Paint.Align.CENTER, 0.16f, pw - 40);
+        } else {
+            label(c, pl.name, px + pw / 2, py + 26, 23, pl.gone ? 0x99f1e8cc : CREAM, semi, Paint.Align.CENTER, 0.03f, pw - 50);
+        }
     }
 
     // ---- turning the page
@@ -983,6 +1223,22 @@ final class CompanionView extends View {
         return -1;
     }
 
+    // The map's buttons: 0 closer, 1 farther, 2 back on the hunter (closer, if it was the whole area)
+    private void mapButtonPressed(int which) {
+        boolean haveHunter = state != null && state.optJSONObject("hunter") != null && state.optJSONObject("hunter").has("x");
+        if (!mapButtonOn(which, haveHunter)) return;
+        if (which == 0) {
+            if (mapZoom <= 1.001f) mapFollow = true;
+            mapZoom = Math.min(ZOOM_MAX, mapZoom * 2);
+        } else if (which == 1) {
+            mapZoom = Math.max(1, mapZoom / 2);
+            if (mapZoom <= 1.001f) mapFollow = true;
+        } else {
+            mapFollow = true;
+            if (mapZoom <= 1.001f) mapZoom = 4;
+        }
+    }
+
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         float x = sheetXOf(e.getX()), y = sheetYOf(e.getY());
@@ -993,6 +1249,10 @@ final class CompanionView extends View {
                 boolean inQuest = state != null && "quest".equals(state.optString("place"));
                 tracking = y >= POUCH_TOP && inQuest;
                 mapTouch = inQuest && x >= MAP_X && x < MAP_X + MAP_W && y >= MAP_Y && y < MAP_Y + MAP_H;
+                mapButton = mapTouch ? mapButtonAt(x, y) : -1;
+                mapDrag = false;
+                panStartX = mapCx;
+                panStartZ = mapCz;
                 swiping = false;
                 downX = x;
                 downY = y;
@@ -1000,6 +1260,18 @@ final class CompanionView extends View {
                 pressed = tracking ? slotAt(x, y) : -1;
                 break;
             case MotionEvent.ACTION_MOVE:
+                if (mapTouch) {  // dragging the map moves what it shows (when it is closer than the whole area)
+                    if (mapButton < 0 && mapLive && (mapDrag || Math.abs(x - downX) > TAP_SLOP || Math.abs(y - downY) > TAP_SLOP)) {
+                        mapDrag = true;
+                        if (mapZoom > 1.001f && mapScale > 0) {
+                            mapFollow = false;
+                            panX = panStartX - (x - downX) / mapScale;
+                            panZ = panStartZ - (y - downY) / mapScale;
+                            invalidate();
+                        }
+                    }
+                    break;
+                }
                 if (!tracking) break;
                 float dx = x - downX, dy = y - downY;
                 if (!swiping && Math.abs(dx) > SWIPE_SLOP && Math.abs(dx) > Math.abs(dy)) swiping = true;
@@ -1011,12 +1283,19 @@ final class CompanionView extends View {
                 }
                 break;
             case MotionEvent.ACTION_UP:
-                if (mapTouch) {  // a tap on the map: zoom in on the hunter, or back to the whole area
+                if (mapTouch) {
                     mapTouch = false;
-                    if (Math.abs(x - downX) < TAP_SLOP && Math.abs(y - downY) < TAP_SLOP) {
-                        mapZoom = !mapZoom;
-                        invalidate();
+                    boolean still = Math.abs(x - downX) < TAP_SLOP && Math.abs(y - downY) < TAP_SLOP;
+                    if (mapButton >= 0) {
+                        if (still && mapButtonAt(x, y) == mapButton) mapButtonPressed(mapButton);
+                    } else if (!mapDrag && still) {  // a tap on the map itself: closer on the hunter, or back to the whole area
+                        if (mapZoom > 1.001f) mapZoom = 1;
+                        else mapZoom = 4;
+                        mapFollow = true;
                     }
+                    mapButton = -1;
+                    mapDrag = false;
+                    invalidate();
                     break;
                 }
                 if (!tracking) break;
@@ -1037,6 +1316,8 @@ final class CompanionView extends View {
                 break;
             case MotionEvent.ACTION_CANCEL:
                 mapTouch = false;
+                mapDrag = false;
+                mapButton = -1;
                 pressed = -1;
                 if (swiping) slideTo(0);
                 tracking = swiping = false;

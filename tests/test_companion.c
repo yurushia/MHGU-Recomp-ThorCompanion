@@ -18,6 +18,8 @@
 static uint64_t g_now = 1000000000ull;
 uint64_t plat_now_ns(void) { return g_now; }
 const char *presence_monster_name(uint16_t id) { (void)id; return "Monster"; }
+static const char *g_pin_text = "";
+const char *config_companion_pins(void) { return g_pin_text; }
 
 static int g_flag3, g_local = 1, g_can = 1;
 static const uint32_t g_bar[] = {3, 5, 7};  // the item bar's order, as the game's walk gives it
@@ -39,7 +41,7 @@ void guest_call(Cpu *c, uint32_t addr) {
 
 // ---- the made-up game
 enum {
-    GC = 0x08001000, SP = 0x08002000, PL = 0x08010000, VT = 0x08003000, PD = 0x08020000, SQ = 0x08004000, QD = 0x08005000,
+    GC = 0x08001000, SP = 0x08002000, PL = 0x08010000, VT = 0x01a30000 /* (main's image: below the heap, not sane()) */, PD = 0x08020000, SQ = 0x08004000, QD = 0x08005000,
     RATE = 0x08006000, POUCH = 0x08007000
 };
 #define G_GAMECONTROL 0x1a8ca48u
@@ -330,6 +332,139 @@ static void test_stops(void) {
     companion_use(5);
     run_ms(2500);
     CHECK(g_ys == 0);
+    run_ms(1000);
+    CHECK(!using_now());  // (given up after three seconds, with a result that says why: test_results)
+}
+
+
+// ---- how a use ends is told to the panel: a clear result, never a "waiting" that just stops
+static int has(const char *needle) { char t[16384]; json(t, sizeof t); return strstr(t, needle) != NULL; }
+
+static void test_results(void) {
+    // it went through
+    reset();
+    companion_use(5);
+    run_ms(600);
+    CHECK(has("\"result\":{\"slot\":5,\"ok\":true,\"why\":\"taken\"}") && !has("\"using\""));
+    run_ms(2000);
+    CHECK(slot_count(5) == 9);
+    CHECK(!has("\"result\""));  // (a success is shown for a moment only)
+
+    // the game's own test says no with the hunter free: "waiting for the bar", then a failure that says so, and tapping again works
+    reset();
+    g_flag3 = 1;
+    companion_use(5);
+    run_ms(1000);
+    CHECK(has("\"using\":5,\"step\":\"wait\",\"waitFor\":\"bar\""));
+    run_ms(3500);
+    CHECK(!has("\"using\""));
+    CHECK(has("\"result\":{\"slot\":5,\"ok\":false,\"why\":\"blocked\"}"));
+    CHECK(g_ys == 0 && slot_count(5) == 10);
+    g_flag3 = 0;
+    companion_use(5);  // a retry
+    run_ms(1000);
+    CHECK(slot_count(5) == 9 && g_ys == 1);
+    CHECK(has("\"ok\":true") && !has("\"ok\":false"));  // (the new use cleared the old failure)
+
+    // the vfunc says no
+    reset();
+    g_can = 0;
+    companion_use(5);
+    run_ms(4500);
+    CHECK(has("\"why\":\"blocked\"") && !has("\"using\""));
+
+    // while the hunter is busy it is "waiting for the hunter", not for the bar
+    reset();
+    set_act(0x10, 3);
+    G.anim = A_BUSY, G.anim_end = g_now + 2000ull * 1000000ull;
+    companion_use(5);
+    run_ms(300);
+    CHECK(has("\"waitFor\":\"hunter\""));
+
+    // a game that takes no Y: told so
+    reset();
+    G.ignore = 1;
+    companion_use(5);
+    run_ms(5000);
+    CHECK(has("\"why\":\"ignored\"") && has("\"ok\":false"));
+    reset();
+    G.ignore = 1;
+    weapon(LONG_SWORD, 1);
+    companion_use(5);
+    run_ms(6000);
+    CHECK(has("\"why\":\"sheathe\""));
+
+    // none left
+    reset();
+    ST16(POUCH + 0x1c + 4 * 5, 0);
+    companion_use(5);
+    run_ms(300);
+    CHECK(has("\"why\":\"empty\""));
+
+    // a failure stays long enough to read, then goes; a new tap clears it at once
+    reset();
+    ST16(POUCH + 0x1c + 4 * 5, 0);
+    companion_use(5);
+    run_ms(300);
+    run_ms(5000);
+    CHECK(has("\"result\""));
+    run_ms(4000);
+    CHECK(!has("\"result\""));
+    ST16(POUCH + 0x1c + 4 * 5, 0);
+    companion_use(5);
+    run_ms(100);
+    companion_use(7);
+    run_ms(100);
+    CHECK(!has("\"why\":\"empty\",") || has("\"slot\":7"));
+}
+
+// ---- the pinned items: by number, in their order, no repeats, no rubbish, at most a page's worth
+static void test_pins(void) {
+    reset();
+    g_pin_text = "";
+    CHECK(has("\"pinMax\":8,\"pins\":[]"));
+    g_pin_text = "28, 9,9,abc,0,70000,10";
+    CHECK(has("\"pins\":[{\"id\":28,\"name\":\"Max Potion\"},{\"id\":9,\"name\":\"Potion\"},{\"id\":10,\"name\":\"Mega Potion\"}]"));
+    g_pin_text = "9,10,11,12,13,14,15,16,17,18";
+    char t[16384];
+    json(t, sizeof t);
+    CHECK(strstr(t, "{\"id\":16,") && !strstr(t, "{\"id\":17,"));  // (eight)
+    g_pin_text = "";
+    CHECK(has("\"pins\":[]"));
+}
+
+// ---- monsters' positions: real ones as they are, and none (not 0, 0, 0) when the game has none
+enum { SE = 0x08008000, EN = 0x08009000, INFO = 0x0800a000 };
+#define G_SENEMY 0x1a51fe0u
+static void monster(int k, uint32_t number, uint8_t zone, float x, float y, float z, int hp) {
+    uint32_t en = EN + 0x10000 * (uint32_t)k, info = INFO + 0x10000 * (uint32_t)k;
+    ST32(SE + 0x1c + 4 * (uint32_t)k, en), ST32(en + 0x1428, info), ST32(en + 0xb5f4, number), ST8(en + 0x1054, zone);
+    ST16(info + 0x1b6, 62), ST32(info + 0x370, (uint32_t)hp), ST32(info + 0x374, 4000);
+    STF(info + 0x40, x), STF(info + 0x44, y), STF(info + 0x48, z);
+}
+static void test_positions(void) {
+    reset();
+    ST32(G_SENEMY, SE);
+    monster(0, 2, 4, 1234.5f, 10.0f, -2345.5f, 3000);
+    monster(1, 3, 7, 0.0f, 0.0f, 0.0f, 3000);          // not set up yet
+    monster(2, 4, 4, 1.0f / 0.0f, 0.0f, 5.0f, 3000);   // not a number
+    char t[16384];
+    json(t, sizeof t);
+    char *m0 = strstr(t, "\"zone\":4,\"hp\":3000,\"hpMax\":4000,\"x\":1234.5,\"y\":10.0,\"z\":-2345.5}");
+    CHECK(m0 != NULL);
+    CHECK(strstr(t, "\"zone\":7,\"hp\":3000,\"hpMax\":4000}") != NULL);   // (no x, y, z: not "0, 0, 0")
+    CHECK(strstr(t, "\"zone\":4,\"hp\":3000,\"hpMax\":4000}") != NULL);   // (the infinite one)
+    char *ms = strstr(t, "\"monsters\":["), *me = ms ? strstr(ms, "\"items\":") : NULL;
+    CHECK(ms && me);
+    for (char *q = ms; q && me && q < me; q++) CHECK(strncmp(q, "\"x\":0.0", 7) != 0 && strncmp(q, "inf", 3) != 0 && strncmp(q, "nan", 3) != 0);
+    // the hunter: a real position as it is; one that is not a number, none
+    STF(PL + 0x40, 10.0f), STF(PL + 0x44, 2.0f), STF(PL + 0x48, -7.0f);
+    CHECK(has("\"x\":10.0,\"y\":2.0,\"z\":-7.0}"));
+    STF(PL + 0x40, 0.0f / 0.0f);
+    json(t, sizeof t);
+    char *h = strstr(t, "\"hunter\":{");
+    CHECK(h != NULL && (strstr(h, "\"x\":") == NULL || strstr(h, "\"x\":") > strstr(h, "\"monsters\"")));  // (none in the hunter's)
+    ST32(G_SENEMY, 0);
 }
 
 int main(void) {
@@ -344,6 +479,9 @@ int main(void) {
     test_stuck();
     test_ignored();
     test_stops();
+    test_results();
+    test_pins();
+    test_positions();
     if (failed) { fprintf(stderr, "%d check(s) failed\n", failed); return 1; }
     printf("test-companion: all passed\n");
     return 0;

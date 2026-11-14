@@ -15,29 +15,51 @@ shows the plain radar here, because the picture is made without the game's files
 ## The map
 
 `AreaMap.java` reads the shape of the hunter's area from the player's own game files: `romfs/nativeNX/loc/arc/stage/map_com/m<stage>.arc`
-(in the app's files folder, `data/romfs/nativeNX`) has, for every area, its ground and its water collision
+(in the app's files folder, `data/romfs/nativeNX`) has, for every area, its ground and its wall collision
 (`stage/m01d/m01a04d/collision/m01a04d-a-g00`, `...-a-w00`), in the same world coordinates the hunter's and the monsters'
 positions are in. Nothing of the game is kept in the app or in this repository: the triangles are read when an area is
 entered (in the background, a few areas are kept in memory) and drawn from above. The file's layout is described at the top
 of `AreaMap.java`; it was found by reading all 12 areas of Jurassic Frontier.
 
-* Of the pieces of ground an area is made of (triangles that share a corner are one piece), the ones the hunter or a monster has
-  stood on are drawn light and the rest dark. The first sight of an area is what the hunter stands on.
-* The monsters shown on the map are the ones whose `zone` (the monster's zone byte, +0x1054, as the hunter's; `emsync.c` reads the
-  same one) is the hunter's: positions are in each area's own coordinates, so a monster in another area cannot be placed. Its
-  card says which area it is in. Monsters are always shown, met or not (the game's own map only marks the ones you have found:
-  that is a flag of the game's UI, which this panel does not use; MapAssist, the plugin that always marks monsters on the game's
-  map, works on that UI layer instead).
-* A tap on the map zooms in on the hunter (about 3200 world units across) and back. A monster off the zoomed view is shown
-  at the edge, grey.
+* **The whole area is drawn, always.** Zoom 1 fits the area's full extent in the panel. Ground that the hunter or a monster
+  has stood on is drawn light, the rest of the ground (other levels, the land round the area) in a darker tone, and the walls
+  (cliffs, rocks: the `-a-w00` files, which are walls and not water: they hold the faces that stand up) as dark lines.
+* **Zoom and pan.** The **+** and **-** buttons in the map's corner zoom in and out (x1, 2, 4, 8, 16); zoomed in, the map follows
+  the hunter until it is dragged, and the target button puts it back on the hunter. A tap on the map jumps between the whole area
+  and x4 on the hunter. A monster outside the view is shown grey at the edge.
+* **What was missing, and why (found by measuring the real files):** (1) the triangles of an area are not all wound the same way,
+  and drawn as one filled path, overlapping triangles wound opposite ways cancel out: 51% of area 3's ground and 3% of area 8's
+  disappeared. Every triangle is now wound the same way (`CompanionView.triangles`; the test `overlapping triangles wound both
+  ways` fails without it: it loses a third of the ground). (2) The map was fitted to the ground the hunter had stood on, so
+  the rest was cut off. (3) The walls were drawn as "water" and almost none of them were (nearly all of a wall file faces
+  sideways).
+* The monsters shown on the map are the ones whose `zone` (the monster's zone byte, +0x1054, as the hunter's; `emsync.c` and `dummy.c`
+  read the same one) is the hunter's: positions are in each area's own coordinates, so a monster in another area cannot be placed.
+  Its card says which area it is in. Monsters are always shown, met or not (the game's own map only marks the ones you have found:
+  that is a flag of the game's UI, which this panel does not use; MapAssist works on that UI layer instead).
+* **Live positions are never made up.** The reader (`companion.c`) leaves a position out of the JSON when the game has none that is
+  real (not a number, out of range, or a monster's all-zero one before it is set up) and the panel says so: under the map, "n monsters
+  on map", "n in another area", "n with no position", "no hunter position"; a monster's card says `NO POSITION`. (Before this, such a
+  position became 0, 0, 0 and was drawn there.)
 * Without the game's files in the place the app looks in (or with an area it cannot read), a radar round the hunter is drawn
-  with the same markers.
+  with the same markers, and the map says which it is: "game files not found" or "no map data for this area".
+
+### Checking live positions on a device
+
+`MHGU_COMPANION_LOG=1` (Android: a line in `env.txt`) writes the panel's JSON once a second to `log.txt`:
+`[companion] {"v":1,"place":"quest",...,"zone":4,...,"hunter":{...,"x":..,"y":..,"z":..},"monsters":[{"zone":4,...,"x":..,"z":..}]}`.
+From that, in order: a monster with **no `x`** is unavailable data (the reader had no real position: the panel says "with no position");
+one with a `zone` other than the hunter's is in another area (the panel says so and does not plot it); one with `x`, `z` and the
+hunter's zone is valid data, and the panel plots it. If the numbers in the log move as the monster does and the marker does not, it
+is the drawing; if they do not move, it is the reader (the status block's `+0x40`, which `dummy.c` writes as the monster's place).
+That the monster's coordinates and the area's collision are the same space is the one thing no PC test can show.
 
 Known limits, not tested on a device: the map's orientation (which way is up) is the world's x to the right and z down, and may
-be the other way round or mirrored against the game's own map; the hunter's heading is not read, so the hunter is a dot; rocks
-and other things that are not ground are not drawn as holes (the files hold a coarser layer too, and the piece the hunter stands
-on is what is shown as ground); the sharpness gauge's colour bands are a fixed look, not the weapon's own steps (the fill is the
-real value).
+be the other way round or mirrored against the game's own map; the hunter's heading is not read, so the hunter is a dot; the
+files hold a coarser layer too, so the "ground" can be larger than the floor you can walk on, and rocks are lines (walls) and not
+holes; triangles touching the file's box are left out (they are the big triangles of the area's hull); the wall lines of areas
+with several levels (3 and 8) are dense; the sharpness gauge's colour bands are a fixed look, not the weapon's own steps (the fill
+is the real value).
 
 ## The item pouch
 
@@ -54,7 +76,26 @@ real value).
 | Sword & Shield out | uses the item, the weapon stays out |
 | any other weapon out | puts the weapon away, waits until it is away and the hunter is idle again, then uses the item |
 
-  The tapped button says what it is doing (`SHEATHING`, `USING`). There is nothing to press on the controller.
+  The tapped button says what it is doing, and the line above the buttons says it in words: `WAITING FOR HUNTER` (the hunter is
+  busy or the weapon is not away yet), `WAITING FOR GAME` (the game's own "may use an item" test says no), `SHEATHING`, `USING`;
+  then `USED`, or a red button, `TAP TO RETRY` and the reason (the game won't allow it right now / didn't take the button / the
+  weapon wouldn't go away / none left / timed out). A tap on the same button tries again. There is nothing to press on the
+  controller.
+
+### Pinned items (Settings > Duo Companion)
+
+The settings menu's **Duo Companion** tab chooses the items that always come first on the item menu: toggle an item to pin it,
+again to unpin it, **Unpin all** to clear them; Save keeps the choice (the ini file's `[Companion] PinnedItems`, item numbers in a
+comma separated list), and it is back after a restart.
+
+* **Capacity is explicit: 8, the first page.** With 8 pinned, the other items in the list say `First page is full` and cannot be
+  pinned until one is unpinned; the list says how many are pinned (`n / 8`). An ini file with more is cut to 8.
+* **Order:** pinned items first, in the order they were pinned (shown as `Pinned 1`, `Pinned 2`...). The items that are not pinned
+  follow in the item bar's own order, on what is left of the first page and on the pages after it: nothing is hidden.
+* **A pinned item you are not carrying** keeps its place, dimmed with `x0`, so the pinned buttons do not shift as items run out
+  (a tap on it does nothing). Pinned buttons have a pin in the corner.
+* The list offers the items a hunter takes into a quest (potions and the like, tools, bombs, traps, seeds); an item pinned by
+  editing the ini file shows up under "Other pinned items", so it can be unpinned.
 
 ## How the one tap works (runtime/hle/companion.c)
 
@@ -71,10 +112,21 @@ puts it away (when the hunter is idle) and with the weapon away uses the selecte
 * The game's own "may use an item" test (the item bar's: `0x47bcd0`, `0x47b918`, vfunc `+0x230`) is checked before the
   item press. It does not look at the weapon, so it passes with the weapon out; `0x47b918` is bit 3 of a flags byte
   (`+0x13cc`), not a busy state, whatever `hle/itembar.c` calls it.
-* Given up after ten seconds from the tap, or on leaving the quest, or when another item is tapped (that one replaces it).
+* **Why a tap used to stay on "Waiting" (fixed):** the vfunc was read through the hunter's vtable only if the vtable address passed
+  `sane()` (a heap address, 0x08000000 and up). The game's vtables are in main's image, below that (`itembar.c` and `input_view.c`
+  say so and do not check), so the function was always read as 0 and the test never passed: a tap on a sheathed weapon, or on
+  Sword & Shield, waited the full ten seconds and then was dropped without a word. (The weapon-out case showed `SHEATHING` and then
+  stuck the same way.) The test model had placed its fake vtable at a heap address, which is why it never showed; it now has
+  it in the image's range, and the suite fails on the old code (27 checks).
+* **It can no longer end silently.** If the game's own test keeps saying no for three seconds with the hunter free, the use ends as
+  `blocked`; `ignored` (the press was made four times and not taken), `sheathe` (the weapon would not go away), `empty` (none left),
+  `timeout` (ten seconds). The JSON carries `"waitFor"` while waiting and `"result"` for a moment afterwards (1.5 s for a success,
+  8 s for a failure) and the panel shows them. If the panel sees the same use for 12 seconds it says the game isn't answering.
+* Given up on leaving the quest, or when another item is tapped (that one replaces it, and clears the old result).
 
 `MHGU_COMPANION_LOG=1` (Android: a line in `env.txt`) logs each step as `[companion] use: ...` and the panel's JSON once a
-second as `[companion] {...}` in `log.txt`: with it a failed tap shows where it stopped.
+second as `[companion] {...}` in `log.txt`: with it a failed tap shows where it stopped (`the game says an item can't be used now`
+is the game's own test saying no: the log then has the reason the panel shows).
 
 **Status: not tested on a device or in a running game.** The offsets are from reading the game's code (main 1.4.0) and
 the port's notes. What the tests below check is the logic, against a model of the hunter and of the touches; what they

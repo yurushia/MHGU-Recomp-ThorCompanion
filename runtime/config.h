@@ -126,6 +126,8 @@ typedef struct {
                               // (%APPDATA%\MHGURecomp\save, ~/.local/share/MHGURecomp/save: main.c)
     char save_dir[256];       // [Android] SaveFolder: the folder holding the save (save_0/), "" the app's own (fs.c)
     char game_dir[256];       // [Android] GameFolder: the folder holding exefs/ and romfs/, "" the app's own (main.c)
+    char companion_pins[64];  // [Companion] PinnedItems: the items pinned to the second screen's first page, item numbers in a comma
+                              // separated list (at most 8, in their order); "" none (hle/companion.c, Settings > Duo Companion)
     char ldn_ryu_servers[256]; // [Multiplayer] RyuServers: Ryujinx LDN servers searched for crossplay (host[:port], comma separated); "" none
     char ldn_ryu_host[128];   // [Multiplayer] RyuHost: the Ryujinx LDN server a hosted hub is created on, for Ryujinx players to join; "" a normal hub
     char ldn_ryu_pass[40];    // [Multiplayer] RyuPassphrase: "" public lobbies, or "Ryujinx-" + 8 hex digits for a private group
@@ -279,6 +281,7 @@ float config_audio_gain(void);  // atomic, safe on audio threads; 0 while muted 
 int config_audio_output(void);  // [Audio] Output as saved (AUDIO_OUT_*), atomic: the audio thread reopens the device
 void config_window_focus(bool focused);  // the window got / lost the focus (runtime/host_input.c)
 int config_language(void);     // last saved UI language, atomic across host threads
+const char *config_companion_pins(void); // the PinnedItems text (hle/companion.c, on the game's thread)
 bool config_confirm_exit(void); // atomic, safe on the host main thread
 bool config_menu_chord(void);   // [Controls] MenuChord as saved, atomic (the input is read on another thread)
 int config_show_battery(void);  // [Performance] ShowBattery as saved, atomic
