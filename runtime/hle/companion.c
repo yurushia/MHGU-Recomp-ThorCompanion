@@ -4,8 +4,9 @@
 //    "hunter":{"name":"..","weapon":7,"hp":100,"hpMax":150,"hpRed":110,"st":900.0,"stMax":900.0,"sharp":300,"sharpMax":450,
 //              "x":0.0,"y":0.0,"z":0.0},
 //    "monsters":[{"id":2,"name":"Rathalos","hp":1234,"hpMax":4000,"x":0.0,"y":0.0,"z":0.0}],
-//    "items":[{"slot":0,"id":9,"n":10,"name":"Potion","sel":true}],"using":0}
-// "using": the pouch slot of an item asked for with companion_use that the game hasn't taken yet (absent: none).
+//    "items":[{"slot":0,"id":9,"n":10,"name":"Potion","sel":true}],"using":0,"step":"sheathe"}
+// "using": the pouch slot of an item asked for with companion_use that the game hasn't taken yet (absent: none);
+// "step": where that has got to: "wait" (for the hunter to be free), "sheathe" (putting the weapon away), "use".
 // place: "quest", "town" (then "town": its type, 0 Hub, 1-6 villages, 7 Hunters' Pub) or "menu" (no hunter).
 //   MHGU_COMPANION_LOG=1   log the text once a second (to check the values on any platform)
 //
@@ -16,18 +17,32 @@
 // - A monster (sEnemy *0x1a51fe0 +0x1c: the 10 live ones): status block *(monster + 0x1428): +0x40 position, +0x1b6
 //   network id (below 10000: large), +0x370 HP, +0x374 its maximum (s32: 0x29a764 keeps HP between 0 and the maximum,
 //   0x2c04a0 sets the maximum). monster +0xb5f4: its number (em<nnn>), named through the quest's list of large monsters.
-// - The quest's time (sQuest *0x1a8ad90): +0x1c updates passed (s32), +0xcc the limit in minutes; the game shows
-//   (limit * 60 * rate - passed) / rate seconds, rate = the float at *0x2326764 +0x38 (0x269b04 and others).
+// - The quest's time (sQuest *0x1a8ad90): +0x1c the updates LEFT (s32, counts down; a first version took it for the updates
+//   passed and showed the time going up), +0xcc the limit in minutes. The game's own code works out the time passed as
+//   (limit * 60 * rate - left) / rate seconds (0x269b04 and others), so the time left is left / rate, with rate = the
+//   float at *0x2326764 +0x38. (The "Inf. Quest Time" cheat holds +0x1c high: it only keeps the quest alive if it is the
+//   time left.)
 // - The pouch (*0x1a584b8): from +0x1a, 4 bytes a slot (0..0x31): u16 item, s16 count. The item bar's order is the
 //   game's own walk (0x4880fc: player, slot, 0 right), from the empty place 0x28 until it comes round.
 //
-// Using an item (companion_use, a touch on the panel): as the RadialMenu Forge plugin does it. On the game's thread, once
-// the hunter may pick an item (the item bar handler's own checks, itembar.c: 0x47bcd0 == 1, 0x47b918 == 0, vfunc +0x230
-// (player, 1) == 1), the slot is written to +0x3298 and Y is held on the pad for a moment (companion_buttons, added to
-// what GetNpadState gives). The game took it when the hunter turns busy or the slot's count drops; else Y is pressed
-// again, a few times. Given up when the hunter isn't free within a few seconds, or on leaving the quest.
-// Not known yet: with the weapon out Y may only sheathe it (the hunter turns busy, which counts as taken here), and with
-// [Actions] Enable=1 the pad's Y reaches the game through the action layer, which may not pass it on.
+// Using an item (companion_use, a touch on the panel), in one touch, as the hunter's weapon needs:
+//   sheathed, or a Sword & Shield out (the one weapon that uses items drawn)   select the slot, press Y
+//   any other weapon out                                                       press Y to put it away, wait until it is
+//                                                                              away and the hunter idle, then as above
+// All on the game's thread (companion_buttons, from GetNpadState: its result is added to the pad's buttons, and Y is held
+// for a moment, which is how the game takes a press).
+// - The hunter's state: the weapon is out when the u8 at player +0x114c is 1; its action is the pair u16 +0x2506 / +0x250a
+//   (hle/input_view.c: idle is 1:0, a roll or an attack another pair). Y puts a drawn weapon away only when the hunter is
+//   idle (docs/GAME-ACTIONS.md), so Y waits for idle (but not for ever: three seconds after the touch it is pressed anyway).
+// - "May use an item" is the item bar handler's own test (itembar.c): 0x47bcd0 == 1, 0x47b918 == 0 (that one is bit 3 of the
+//   flags byte at +0x13cc, not a busy state, whatever itembar.c calls it) and vfunc +0x230 (player, 1) == 1. It does not look
+//   at the weapon, so with the weapon out it passes and a Y only sheathes.
+// - The game took a Y when the hunter's action is no longer the one it had at the press (or, for an item, the slot's count
+//   dropped: a consumable's does, a tool's doesn't, and some drop late). Then nothing is pressed again for that step: a
+//   second Y would use another item or the same one twice. Only when the hunter did nothing at all is Y pressed again
+//   (a few times). The weapon is away when the +0x114c byte is 0.
+// Given up after a few seconds, or on leaving the quest. Not known yet: with [Actions] Enable=1 the pad's Y reaches the game
+// through the action layer, which may not pass it on; and the byte at +0x114c is checked on a Hammer only (input_view.c).
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -49,6 +64,9 @@
 #define TOWN_NONE      0xffu
 #define PL_POS         0x40u
 #define PL_ZONE        0x1054u
+#define PL_DRAWN       0x114cu     // u8: 1 the weapon is out, 0 put away
+#define PL_ACT_ST      0x2506u     // u16, with PL_ACT_NO: the hunter's current action; 1:0 is idle (input_view.c)
+#define PL_ACT_NO      0x250au
 #define PL_DATA        0x13c4u
 #define PD_NAME        0x514u
 #define PD_WEAPON      0x14cu
@@ -64,7 +82,7 @@
 #define POUCH_SLOTS    0x32u
 #define FN_ITEM_NEXT   0x4880fcu
 #define FN_PL_IS_LOCAL 0x47bcd0u    // (player) 1: ours
-#define FN_PL_BUSY     0x47b918u    // (player) 0: free
+#define FN_PL_FLAG3    0x47b918u    // (player) bit 3 of the flags byte at +0x13cc: 0 for the item bar to work (itembar.c: "busy")
 #define VF_CAN_SELECT  0x230u      // vfunc (player, 1) 1: may pick an item now
 #define FN_PROWLER_BAR 0x1417d68u
 #define VF_PROWLER_BAR 0x5c4u      // holds FN_PROWLER_BAR in uOtomo's vtable only (itembar.c)
@@ -76,28 +94,40 @@
 #define INFO_ID        0x1b6u
 #define INFO_HP        0x370u
 #define INFO_HP_MAX    0x374u
-#define SQ_PASSED      0x1cu
+#define SQ_TICKS_LEFT  0x1cu
 #define SQ_LIMIT       0xccu
 #define SQ_DATA        0xa4u
 #define QD_NUMBER      0x8u
 #define QD_STAGE       0x10u
 #define QD_MONSTERS    0x64u       // 5 of 14 bytes, u16 monster id first
 #define TICK_NS        100000000ull
-#define MAX_ITEMS      24
-#define USE_WAIT_NS    3000000000ull  // how long a use waits for the hunter to be free
-#define USE_HOLD_NS    100000000ull   // Y held
-#define USE_TAKEN_NS   400000000ull   // how long the game has to take a press before the next one
+#define MAX_ITEMS      50          // the pouch's slots: a page of the panel shows eight
+#define WEAPON_SNS     1u          // the weapon type (as g_weapons in presence.c) that uses items with the weapon out
+#define ACT_IDLE       ((1u << 16) | 0u)
+#define USE_TOTAL_NS   10000000000ull  // the whole sequence, from the touch
+#define USE_HOLD_NS    100000000ull    // Y held
+#define USE_TAKEN_NS   600000000ull    // how long the game has to show it took a press that was meant to use the item
+#define SHEATHE_WAIT_NS 1200000000ull  // ... that was meant to put the weapon away
+#define IDLE_GRACE_NS  3000000000ull   // how long a press waits for the hunter to be idle (a Y in the middle of a move is lost)
+#define SETTLE_NS      150000000ull    // idle again after the weapon is away: a moment to be sure
+#define AWAY_FORCE_NS  1000000000ull   // ... or this long after it is away, idle or not
 #define USE_TRIES      4
-#define BTN_Y_BIT      (1ull << 3)    // NpadButton Y (input.h)
+#define SHEATHE_TRIES  3
+#define BTN_Y_BIT      (1ull << 3)     // NpadButton Y (input.h)
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-static char g_json[8192];
+static char g_json[16384];
 static size_t g_len;
 
 // A use asked for: g_use_slot by any thread (-1: none), the rest by the game's thread only.
 static int g_use_slot = -1;
-static int u_slot = -1, u_phase, u_tries, u_count;
-static uint64_t u_deadline, u_hold_until;
+enum { U_WAIT, U_SHEATHE, U_USE };
+static volatile int u_slot = -1;  // (the panel's text is made on the same thread: volatile for the tests' sake)
+static volatile int u_phase;
+static int u_tries, u_sheathes, u_count;
+static bool u_acted, u_after_sheathe;
+static uint32_t u_act_press;
+static uint64_t u_deadline, u_hold_until, u_retry, u_wait_from, u_away_at, u_idle_since;
 
 static bool sane(uint32_t a) { return a >= 0x08000000u && a < 0xF0000000u && !(a & 3); }
 
@@ -167,6 +197,16 @@ void companion_use(int slot) {
     pthread_mutex_unlock(&g_lock);
 }
 
+static bool use_log(void) { return ENV("MHGU_COMPANION_LOG") != NULL; }
+#define ULOG(...) do { if (use_log()) LOG("[companion] use: " __VA_ARGS__); } while (0)
+
+static void use_stop(const char *why) {
+    ULOG("slot %d: %s\n", u_slot, why);
+    u_slot = -1;
+}
+
+static uint32_t hunter_act(uint32_t pl) { return ((uint32_t)LD16(pl + PL_ACT_ST) << 16) | LD16(pl + PL_ACT_NO); }
+
 // Each time the game reads player 1's pad: steps a use that is waiting; returns the buttons to add to the pad (Y).
 uint64_t companion_buttons(Cpu *c) {
     uint64_t now = plat_now_ns();
@@ -174,25 +214,64 @@ uint64_t companion_buttons(Cpu *c) {
     int asked = g_use_slot;
     g_use_slot = -1;
     pthread_mutex_unlock(&g_lock);
-    if (asked >= 0) u_slot = asked, u_phase = 0, u_tries = 0, u_deadline = now + USE_WAIT_NS, u_hold_until = 0;
+    if (asked >= 0) {
+        u_slot = asked, u_phase = U_WAIT, u_tries = u_sheathes = 0, u_acted = u_after_sheathe = false;
+        u_deadline = now + USE_TOTAL_NS, u_wait_from = now;
+        u_hold_until = u_retry = u_away_at = u_idle_since = 0;
+        ULOG("slot %d asked\n", asked);
+    }
     if (u_slot < 0) return 0;
     uint32_t pl = local_player();
-    if (!pl || pouch_count(u_slot) <= 0) { u_slot = -1; return 0; }  // (left the quest; nothing in that slot)
-    if (u_phase == 0) {
-        uint32_t can = LD32(LD32(pl) + VF_CAN_SELECT);
-        if (call(c, FN_PL_IS_LOCAL, pl, 0, 0) == 1 && call(c, FN_PL_BUSY, pl, 0, 0) == 0 && can && call(c, can, pl, 1, 0) == 1) {
-            ST16(pl + PL_ITEM_SLOT, u_slot);
-            u_count = pouch_count(u_slot);
-            u_phase = 1, u_tries++, u_hold_until = now + USE_HOLD_NS, u_deadline = now + USE_TAKEN_NS;
-        } else if (now >= u_deadline) u_slot = -1;  // (never free)
-    } else if (now >= u_hold_until) {
-        if (call(c, FN_PL_BUSY, pl, 0, 0) != 0 || pouch_count(u_slot) < u_count) u_slot = -1;  // (the game took it)
-        else if (now >= u_deadline) {
-            if (u_tries >= USE_TRIES) u_slot = -1;
-            else u_phase = 0, u_deadline = now + USE_WAIT_NS;
+    if (!pl) return use_stop("left the quest"), 0;
+    if (now >= u_deadline) return use_stop("gave up"), 0;
+    if (call(c, FN_PL_IS_LOCAL, pl, 0, 0) != 1) return use_stop("not our hunter"), 0;
+    uint32_t pd = LD32(pl + PL_DATA), act = hunter_act(pl);
+    bool drawn = LD8(pl + PL_DRAWN) != 0, sns = sane(pd) && LD32(pd + PD_WEAPON) == WEAPON_SNS;
+    bool idle = act == ACT_IDLE, holding = now < u_hold_until;
+    if (idle) {
+        if (!u_idle_since) u_idle_since = now;
+    } else u_idle_since = 0;
+    if (u_phase != U_WAIT && act != u_act_press) u_acted = true;  // (the hunter did something since the press)
+
+    if (u_phase == U_USE) {
+        if (pouch_count(u_slot) < u_count) return use_stop("taken: its count dropped"), 0;
+        if (u_acted) {
+            if (!holding) return use_stop("taken: the hunter acted"), 0;
+        } else if (!holding && now >= u_retry) {
+            if (u_tries >= USE_TRIES) return use_stop("not taken"), 0;
+            u_phase = U_WAIT, u_wait_from = now;
+        }
+    } else if (u_phase == U_SHEATHE) {
+        if (!drawn) {
+            u_phase = U_WAIT, u_after_sheathe = true, u_away_at = now, u_wait_from = now;
+            ULOG("slot %d: weapon away\n", u_slot);
+        } else if (!holding && !u_acted && now >= u_retry) {  // (nothing happened: another Y; if it did, wait for it)
+            if (u_sheathes >= SHEATHE_TRIES) return use_stop("the weapon would not go away"), 0;
+            u_phase = U_WAIT, u_wait_from = now;
         }
     }
-    return u_slot >= 0 && u_phase == 1 && now < u_hold_until ? BTN_Y_BIT : 0;
+    if (u_phase == U_WAIT) {
+        if (pouch_count(u_slot) <= 0) return use_stop("none left"), 0;
+        bool free_now = idle || now - u_wait_from >= IDLE_GRACE_NS;
+        if (drawn && !sns) {  // the weapon first: Y puts it away when the hunter is idle
+            if (free_now) {
+                u_phase = U_SHEATHE, u_sheathes++, u_acted = false, u_act_press = act;
+                u_hold_until = now + USE_HOLD_NS, u_retry = now + SHEATHE_WAIT_NS;
+                ULOG("slot %d: Y to put the weapon away (%d)\n", u_slot, u_sheathes);
+            }
+        } else {
+            bool settled = !u_after_sheathe || (u_idle_since && now - u_idle_since >= SETTLE_NS) || now - u_away_at >= AWAY_FORCE_NS;
+            uint32_t vt = LD32(pl), can = sane(vt) ? LD32(vt + VF_CAN_SELECT) : 0;
+            if (settled && (u_after_sheathe || free_now) && call(c, FN_PL_FLAG3, pl, 0, 0) == 0 && can && call(c, can, pl, 1, 0) == 1) {
+                ST16(pl + PL_ITEM_SLOT, u_slot);
+                u_count = pouch_count(u_slot);
+                u_phase = U_USE, u_tries++, u_acted = false, u_act_press = act;
+                u_hold_until = now + USE_HOLD_NS, u_retry = now + USE_TAKEN_NS;
+                ULOG("slot %d: Y to use it (%d)%s\n", u_slot, u_tries, drawn ? ", weapon out" : "");
+            }
+        }
+    }
+    return u_slot >= 0 && u_phase != U_WAIT && now < u_hold_until ? BTN_Y_BIT : 0;
 }
 
 static void put_hunter(Out *o, uint32_t pl, uint32_t pd, bool quest) {
@@ -210,14 +289,14 @@ static void put_hunter(Out *o, uint32_t pl, uint32_t pd, bool quest) {
         (double)finite_or_0(LDF(pl + PL_POS + 4)), (double)finite_or_0(LDF(pl + PL_POS + 8)));
 }
 
-// The quest's time left, in seconds, as the game works it out.
+// The quest's time left, in seconds: the updates left (counting down) over the rate the game counts them at.
 static void put_time(Out *o, uint32_t sq) {
     uint32_t rp = LD32(G_RATE);
     int rate = sane(rp) ? (int)finite_or_0(LDF(rp + 0x38)) : 0;
-    int32_t limit = (int32_t)LD32(sq + SQ_LIMIT), passed = (int32_t)LD32(sq + SQ_PASSED);
-    if (rate < 1 || rate > 1000 || limit < 1 || limit > 1000 || passed < 0) return;
-    int64_t left = ((int64_t)limit * 60 * rate - passed) / rate;
-    put(o, ",\"time\":{\"left\":%d,\"limit\":%d}", (int)(left < 0 ? 0 : left), limit * 60);
+    int32_t limit = (int32_t)LD32(sq + SQ_LIMIT), ticks = (int32_t)LD32(sq + SQ_TICKS_LEFT);
+    if (rate < 1 || rate > 1000 || limit < 1 || limit > 1000) return;
+    int64_t left = ticks / rate, total = (int64_t)limit * 60;
+    put(o, ",\"time\":{\"left\":%d,\"limit\":%d}", (int)(left < 0 ? 0 : left > total ? total : left), (int)total);
 }
 
 static void put_monsters(Out *o, uint32_t qd) {
@@ -292,7 +371,9 @@ void companion_tick(Cpu *c) {
         put_hunter(&o, pl, pd, true);
         put_monsters(&o, qd);
         put_items(&o, c, pl);
-        if (u_slot >= 0) put(&o, ",\"using\":%d", u_slot);
+        if (u_slot >= 0)
+            put(&o, ",\"using\":%d,\"step\":\"%s\"", u_slot,  // (waiting for the hunter after the weapon is away is still sheathing)
+                u_phase == U_SHEATHE || (u_phase == U_WAIT && u_after_sheathe) ? "sheathe" : u_phase == U_USE ? "use" : "wait");
     } else {
         put(&o, ",\"place\":\"town\",\"town\":%u", town);
         put_hunter(&o, pl, pd, false);

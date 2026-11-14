@@ -1,9 +1,15 @@
-// What the companion panel draws (Companion.java): the quest's time and area, the hunter's HP, stamina and sharpness,
-// the large monsters' HP and the item bar; in a town the hunter and the town. Laid out on a 1240 x 1080 sheet (the
-// AYN Thor's lower screen) that is scaled to fit whatever the display is. A touch on an item of the item bar uses it
-// (Companion.useItem).
+// What the companion panel draws (Companion.java): the quest's time left and area (small, in one band), the hunter's HP,
+// stamina and sharpness, the large monsters' HP, and below them most of the screen for the item pouch; in a town the
+// hunter and the town. Laid out on a 1240 x 1080 sheet (the AYN Thor's lower screen) scaled to fit whatever the display is.
+//
+// The item pouch is a fixed grid of two rows of four buttons, eight to a page, every button the same size on every page.
+// A tap on a button uses that item at once (Companion.useItem: the reader puts a drawn weapon away first where the
+// weapon needs it, runtime/hle/companion.c). A swipe sideways anywhere in the pouch area turns the page and never uses
+// anything: a touch is a tap only if the finger stays on its button, and a swipe once it has moved sideways past a
+// small distance.
+//
 // The look: a dark slate sheet, thin condensed lettering (Barlow Condensed, android/assets/fonts; the system's
-// condensed face without it), slim slanted gauges with a glow, the time and the area largest.
+// condensed face without it), slim slanted gauges with a glow.
 package io.github.morerokk.mhgurecomp;
 
 import android.content.Context;
@@ -27,7 +33,16 @@ import org.json.JSONObject;
 import java.util.Locale;
 
 final class CompanionView extends View {
-    private static final float W = 1240, H = 1080, L = 52, R = W - 52, TOP = 44, BOTTOM = H - 44;
+    private static final float W = 1240, H = 1080, L = 52, R = W - 52, TOP = 36, BOTTOM = H - 44;
+    // The item pouch: two rows of four buttons, eight to a page
+    static final int COLS = 4, ROWS = 2, PER_PAGE = COLS * ROWS;
+    private static final float GRID_TOP = 566, CELL_GAP = 16, POUCH_TOP = 514;  // (POUCH_TOP: where the swipe area starts)
+    private static final float CELL_W = (R - L - CELL_GAP * (COLS - 1)) / COLS;
+    private static final float CELL_H = (BOTTOM - GRID_TOP - CELL_GAP * (ROWS - 1)) / ROWS;
+    // Touch: how far a finger may wander and still be a tap, from where a swipe starts, how far (or how fast) it has to go
+    private static final float TAP_SLOP = 30, SWIPE_SLOP = 36, SWIPE_COMMIT = 110, FLING_MIN = 55;
+    private static final long FLING_MS = 350, ANIM_MS = 170;
+
     private static final int TEXT = 0xffeef3ef, SOFT = 0xffc9d6d2, DIM = 0xff8fa6a3, GOLD = 0xfff4c95d, RED = 0xffff3b30,
             ORANGE = 0xffe0603c, TROUGH = 0x66000000, LINE = 0x2effffff;
     private static final float SLANT = 0.2226f;  // a gauge's ends lean by this much of its height to each side (24 degrees)
@@ -51,10 +66,23 @@ final class CompanionView extends View {
     private final Typeface light, medium, semi;
     private String last = "";
     private JSONObject state;
-    // The item bar's cells as last drawn (sheet coordinates) and their pouch slots; the cell a finger is on (-1: none)
-    private final RectF[] cells = new RectF[24];
-    private final int[] cellSlots = new int[24];
-    private int cellCount, pressed = -1;
+
+    // The pouch's page, and a swipe or the slide to a page: drag is how far the pages are shifted, in sheet pixels
+    private int page, pageCount = 1;
+    private float drag;
+    private boolean animating;
+    private long animStart;
+    private float animFrom, animTo;
+    private int animDir;
+    // The buttons of the page shown, as last drawn (sheet coordinates), and their pouch slots
+    private final RectF[] cells = new RectF[PER_PAGE];
+    private final int[] cellSlots = new int[PER_PAGE];
+    private int cellCount;
+    // The touch in progress
+    private boolean tracking, swiping;
+    private float downX, downY;
+    private long downTime;
+    private int pressed = -1;
     private float sheetScale = 1, sheetX, sheetY;
 
     CompanionView(Context context) {
@@ -63,6 +91,7 @@ final class CompanionView extends View {
         light = face(context, "Light", "sans-serif-condensed-light", Typeface.NORMAL);
         medium = face(context, "Medium", "sans-serif-condensed-medium", Typeface.NORMAL);
         semi = face(context, "SemiBold", "sans-serif-condensed", Typeface.BOLD);
+        for (int i = 0; i < PER_PAGE; i++) cells[i] = new RectF();
     }
 
     private static Typeface face(Context context, String weight, String fallback, int style) {
@@ -83,6 +112,11 @@ final class CompanionView extends View {
             state = null;
         }
         invalidate();
+    }
+
+    /** The page of the pouch shown (0 based), for the tests. */
+    int page() {
+        return page;
     }
 
     private static String at(String[] names, int i) {
@@ -203,13 +237,13 @@ final class CompanionView extends View {
     }
 
     private void quest(Canvas c, JSONObject s) {
-        // The time left: a dial whose arc shrinks, and the minutes and seconds
+        // One compact band: the time left (a small dial and the minutes and seconds) and, on the right, where
         JSONObject time = s.optJSONObject("time");
         if (time != null) {
             int left = time.optInt("left"), limit = time.optInt("limit");
-            float frac = (float) part(left, limit), cx = L + 56, cy = TOP + 88, r = 50;
+            float frac = (float) part(left, limit), cx = L + 28, cy = TOP + 42, r = 26;
             boolean late = left < 300;
-            stroke.setStrokeWidth(5);
+            stroke.setStrokeWidth(4);
             stroke.setColor(0x22ffffff);
             c.drawCircle(cx, cy, r, stroke);
             stroke.setColor(late ? RED : GOLD);
@@ -217,51 +251,51 @@ final class CompanionView extends View {
             rect.set(cx - r, cy - r, cx + r, cy + r);
             c.drawArc(rect, -90, 360 * frac, false, stroke);
             double a = Math.toRadians(360 * frac);
-            stroke.setStrokeWidth(4);
+            stroke.setStrokeWidth(3);
             stroke.setColor(TEXT);
-            c.drawLine(cx, cy, cx + (float) (34 * Math.sin(a)), cy - (float) (34 * Math.cos(a)), stroke);
+            c.drawLine(cx, cy, cx + (float) (17 * Math.sin(a)), cy - (float) (17 * Math.cos(a)), stroke);
             stroke.setStrokeCap(Paint.Cap.BUTT);
             fill.setColor(TEXT);
-            c.drawCircle(cx, cy, 5, fill);
-            label(c, String.format(Locale.ROOT, "%d:%02d", left / 60, left % 60), L + 138, TOP + 148, 150, late ? RED : TEXT, light,
+            c.drawCircle(cx, cy, 3, fill);
+            label(c, String.format(Locale.ROOT, "%d:%02d", left / 60, left % 60), L + 76, TOP + 68, 78, late ? RED : TEXT, light,
                   Paint.Align.LEFT, -0.01f, 0);
         }
-        // Where
         String stage = at(STAGES, s.optInt("stage") % 100);
         int zone = s.optInt("zone", -1);
-        label(c, (stage != null ? stage : "Quest " + s.optInt("quest")).toUpperCase(Locale.ROOT), R, TOP + 62, 34, SOFT, medium,
-              Paint.Align.RIGHT, 0.2f, 600);
-        label(c, zone == 0 ? "CAMP" : zone > 0 ? "AREA " + zone : "", R, TOP + 141, 76, GOLD, semi, Paint.Align.RIGHT, 0.04f, 0);
-        hairline(c, 220);
+        label(c, (stage != null ? stage : "Quest " + s.optInt("quest")).toUpperCase(Locale.ROOT), R, TOP + 32, 24, SOFT, medium,
+              Paint.Align.RIGHT, 0.2f, 560);
+        label(c, zone == 0 ? "CAMP" : zone > 0 ? "AREA " + zone : "", R, TOP + 74, 44, GOLD, semi, Paint.Align.RIGHT, 0.04f, 0);
+        hairline(c, 124);
 
         // The hunter
         JSONObject h = s.optJSONObject("hunter");
         if (h != null) {
             String weapon = at(WEAPONS, h.optInt("weapon", -1));
-            label(c, h.optString("name"), L, 294, 46, TEXT, semi, Paint.Align.LEFT, 0.03f, 640);
-            if (weapon != null) label(c, weapon.toUpperCase(Locale.ROOT), R, 292, 26, DIM, medium, Paint.Align.RIGHT, 0.2f, 0);
+            label(c, h.optString("name"), L, 168, 36, TEXT, semi, Paint.Align.LEFT, 0.03f, 640);
+            if (weapon != null) label(c, weapon.toUpperCase(Locale.ROOT), R, 166, 24, DIM, medium, Paint.Align.RIGHT, 0.2f, 0);
             float x = 204, w = 812;
             int hp = h.optInt("hp"), hpMax = h.optInt("hpMax");
-            caption(c, "Health", L, 342);
-            gauge(c, x, 324, w, 20, part(hp, hpMax), part(h.optInt("hpRed"), hpMax), 0xffc8452f, 0xffb9f58a, 0xff55c35a);
-            value(c, String.valueOf(hp), " / " + hpMax, R, 346);
+            caption(c, "Health", L, 202);
+            gauge(c, x, 184, w, 18, part(hp, hpMax), part(h.optInt("hpRed"), hpMax), 0xffc8452f, 0xffb9f58a, 0xff55c35a);
+            value(c, String.valueOf(hp), " / " + hpMax, R, 205);
             double st = part(h.optDouble("st", 0), h.optDouble("stMax", 0));
-            caption(c, "Stamina", L, 392);
-            gauge(c, x, 378, w, 12, st, 0, 0, 0xffffe58a, 0xffe9b63a);
-            value(c, String.valueOf(Math.round(st * 100)), " %", R, 396);
+            caption(c, "Stamina", L, 236);
+            gauge(c, x, 224, w, 11, st, 0, 0, 0xffffe58a, 0xffe9b63a);
+            value(c, String.valueOf(Math.round(st * 100)), " %", R, 239);
             int sharp = h.optInt("sharp"), sharpMax = h.optInt("sharpMax");
             if (sharpMax > 0) {
-                caption(c, "Sharp", L, 442);
-                gauge(c, x, 428, w, 12, part(sharp, sharpMax), 0, 0, 0xffd6f1ff, 0xff62b6e6);
-                value(c, String.valueOf(sharp), " / " + sharpMax, R, 446);
+                caption(c, "Sharp", L, 268);
+                gauge(c, x, 256, w, 11, part(sharp, sharpMax), 0, 0, 0xffd6f1ff, 0xff62b6e6);
+                value(c, String.valueOf(sharp), " / " + sharpMax, R, 271);
             }
         }
 
-        // The large monsters: a row each, smaller when there are more than two
+        // The large monsters: a row each, shorter when there are more than two
         JSONArray monsters = s.optJSONArray("monsters");
         int n = monsters != null ? Math.min(monsters.length(), 4) : 0;
-        float top = 478, gap = 12, rowH = n > 0 ? Math.min(96, (262 - gap * (n - 1)) / n) : 0, k = rowH / 96;
-        if (n == 0) caption(c, "No large monster in sight", L, top + 50);
+        // (room for two monsters; with more the rows get shorter, so the pouch below never moves)
+        float top = 294, gap = 10, rowH = n > 0 ? Math.max(48, Math.min(92, (200 - gap * (n - 1)) / n)) : 0, k = rowH / 96;
+        if (n == 0) caption(c, "No large monster in sight", L, top + 40);
         for (int i = 0; i < n; i++) {
             JSONObject m = monsters.optJSONObject(i);
             if (m == null) continue;
@@ -285,83 +319,204 @@ final class CompanionView extends View {
             gauge(c, 256, y + 70 * k, R - 26 - 256, 14 * k, p, 0, 0, low ? 0xffff8a7a : 0xffffb08a, low ? 0xffe02b20 : ORANGE);
         }
 
-        // The item bar: cells with two corners cut; the one in hand in gold
-        JSONArray items = s.optJSONArray("items");
-        int count = items != null ? Math.min(items.length(), cells.length) : 0;
-        if (count == 0) return;
-        caption(c, "Item pouch  ·  tap to use", L, 776);
-        int cols = count <= 8 ? 4 : count <= 15 ? 5 : 6, lines = (count + cols - 1) / cols;
-        float cellGap = 16, gridTop = 796, cw = (R - L - cellGap * (cols - 1)) / cols;
-        float ch = Math.min(112, (BOTTOM - gridTop - cellGap * (lines - 1)) / lines), ks = Math.min(1, Math.min(ch / 112, cw / 272));
-        int using = s.optInt("using", -1);
-        for (int i = 0; i < count; i++) {
-            JSONObject it = items.optJSONObject(i);
-            if (it == null) continue;
-            float x = L + (i % cols) * (cw + cellGap), y = gridTop + (i / cols) * (ch + cellGap), cut = 22 * ks;
-            int slot = it.optInt("slot", -1);
-            boolean selected = it.optBoolean("sel"), busy = slot >= 0 && slot == using, down = slot >= 0 && slot == pressed;
-            if (slot >= 0) {
-                if (cells[cellCount] == null) cells[cellCount] = new RectF();
-                cells[cellCount].set(x, y, x + cw, y + ch);
-                cellSlots[cellCount++] = slot;
-            }
-            path.rewind();
-            path.moveTo(x, y);
-            path.lineTo(x + cw - cut, y);
-            path.lineTo(x + cw, y + cut);
-            path.lineTo(x + cw, y + ch);
-            path.lineTo(x + cut, y + ch);
-            path.lineTo(x, y + ch - cut);
-            path.close();
-            int tint = selected || busy ? GOLD : 0xffffffff;
-            float a0 = busy ? 0.5f : selected ? 0.25f : down ? 0.2f : 0.07f, a1 = busy ? 0.3f : selected ? 0.08f : down ? 0.1f : 0.024f;
-            fill.setShader(new LinearGradient(0, y, 0, y + ch, alpha(tint, a0), alpha(tint, a1), Shader.TileMode.CLAMP));
-            c.drawPath(path, fill);
-            fill.setShader(null);
-            stroke.setStrokeWidth(selected ? 1.5f : 1);
-            stroke.setColor(selected || busy ? GOLD : 0x22ffffff);
-            c.drawPath(path, stroke);
-            if (selected) {
-                fill.setColor(GOLD);
-                c.drawRect(x, y, x + 6, y + ch - cut, fill);
-            }
-            // (the count first: in a low cell the name stops short of it)
-            float kt = Math.max(ks, 0.64f), numSize = Math.min(66 * kt, ch * 0.62f);
-            float nw = label(c, String.valueOf(it.optInt("n")), x + cw - 22 * ks, y + ch - 14 * ks, numSize, selected ? GOLD : TEXT, light,
-                             Paint.Align.RIGHT, 0, 0);
-            label(c, "\u00d7", x + cw - 22 * ks - nw - 4, y + ch - 16 * ks, 30 * kt, DIM, light, Paint.Align.RIGHT, 0, 0);
-            String name = it.optString("name");
-            float nameWidth = cw - 20 * ks - (ch < 80 ? nw + 30 * kt + 22 * ks : 20 * ks);
-            label(c, name.isEmpty() ? "Item " + it.optInt("id") : name, x + 20 * ks, y + Math.max(40 * ks, 30 * kt * 0.95f), 30 * kt,
-                  selected ? 0xffffffff : SOFT, medium, Paint.Align.LEFT, 0.04f, nameWidth);
-        }
+        pouch(c, s);
     }
 
-    // The pouch slot of the item bar's cell at a point of the view, -1 when there is none.
-    private int slotAt(float vx, float vy) {
-        float x = (vx - sheetX) / sheetScale, y = (vy - sheetY) / sheetScale;
+    // ---- the item pouch
+
+    private float cellX(int col, float shift) {
+        return L + col * (CELL_W + CELL_GAP) + shift;
+    }
+
+    private float cellY(int row) {
+        return GRID_TOP + row * (CELL_H + CELL_GAP);
+    }
+
+    private void pouch(Canvas c, JSONObject s) {
+        JSONArray items = s.optJSONArray("items");
+        int count = items != null ? items.length() : 0;
+        pageCount = Math.max(1, (count + PER_PAGE - 1) / PER_PAGE);
+        if (page >= pageCount) page = pageCount - 1;
+        if (animating) step();
+        caption(c, count == 0 ? "Item pouch  ·  nothing on the bar" : "Item pouch  ·  tap to use", L, 548);
+        if (count == 0) return;
+        if (pageCount > 1) {  // where we are: the page's number, and a dot for each page
+            float x = R;
+            x -= label(c, (page + 1) + " / " + pageCount, x, 548, 24, DIM, medium, Paint.Align.RIGHT, 0.1f, 0) + 22;
+            for (int p = pageCount - 1; p >= 0; p--) {
+                fill.setColor(p == page ? GOLD : 0x44ffffff);
+                c.drawCircle(x - 5, 540, p == page ? 6 : 5, fill);
+                x -= 20;
+            }
+        }
+        int using = s.optInt("using", -1);
+        String step = s.optString("step");
+        c.save();
+        c.clipRect(0, GRID_TOP - 8, W, BOTTOM + 8);  // (a page slides in from the screen's edge, not out over the rest)
+        for (int p = Math.max(0, page - 1); p <= Math.min(pageCount - 1, page + 1); p++) {
+            float shift = (p - page) * W + drag;
+            if (shift <= -W || shift >= W) continue;
+            for (int i = 0; i < PER_PAGE && p * PER_PAGE + i < count; i++) {
+                JSONObject it = items.optJSONObject(p * PER_PAGE + i);
+                if (it != null) button(c, it, cellX(i % COLS, shift), cellY(i / COLS), p == page ? i : -1, using, step);
+            }
+        }
+        c.restore();
+    }
+
+    // One button. index >= 0: of the page shown, so a touch can find it.
+    private void button(Canvas c, JSONObject it, float x, float y, int index, int using, String step) {
+        float w = CELL_W, h = CELL_H, cut = 26;
+        int slot = it.optInt("slot", -1);
+        boolean selected = it.optBoolean("sel"), busy = slot >= 0 && slot == using, down = slot >= 0 && slot == pressed;
+        if (index >= 0 && slot >= 0) {
+            cells[index].set(x, y, x + w, y + h);
+            cellSlots[index] = slot;
+            cellCount = Math.max(cellCount, index + 1);
+        }
+        path.rewind();
+        path.moveTo(x, y);
+        path.lineTo(x + w - cut, y);
+        path.lineTo(x + w, y + cut);
+        path.lineTo(x + w, y + h);
+        path.lineTo(x + cut, y + h);
+        path.lineTo(x, y + h - cut);
+        path.close();
+        int tint = selected || busy ? GOLD : 0xffffffff;
+        float a0 = busy ? 0.5f : selected ? 0.22f : down ? 0.22f : 0.08f, a1 = busy ? 0.3f : selected ? 0.07f : down ? 0.12f : 0.028f;
+        fill.setShader(new LinearGradient(0, y, 0, y + h, alpha(tint, a0), alpha(tint, a1), Shader.TileMode.CLAMP));
+        c.drawPath(path, fill);
+        fill.setShader(null);
+        stroke.setStrokeWidth(selected || busy || down ? 2 : 1);
+        stroke.setColor(selected || busy ? GOLD : down ? 0x66ffffff : 0x26ffffff);
+        c.drawPath(path, stroke);
+        if (selected) {
+            fill.setColor(GOLD);
+            c.drawRect(x, y, x + 7, y + h - cut, fill);
+        }
+        name(c, it.optString("name").isEmpty() ? "Item " + it.optInt("id") : it.optString("name"), x + 24, y + 46,
+             selected ? 0xffffffff : SOFT, w - 24 - 28);
+        String n = String.valueOf(it.optInt("n"));
+        float nw = label(c, n, x + w - 24, y + h - 22, 108, selected || busy ? GOLD : TEXT, light, Paint.Align.RIGHT, 0, 0);
+        label(c, "×", x + w - 24 - nw - 6, y + h - 26, 40, DIM, light, Paint.Align.RIGHT, 0, 0);
+        if (busy)  // what the one touch is doing now
+            label(c, "sheathe".equals(step) ? "SHEATHING" : "wait".equals(step) ? "WAITING" : "USING", x + 24, y + h - 24, 22, GOLD,
+                  medium, Paint.Align.LEFT, 0.2f, 0);
+    }
+
+    // An item's name: on one line, or on two when it does not fit (the second cut short if it still doesn't)
+    private void name(Canvas c, String name, float x, float y, int color, float width) {
+        float size = 34;
+        text.setTextSize(size);
+        text.setTypeface(medium);
+        text.setLetterSpacing(0.04f);
+        if (text.measureText(name) <= width) {
+            label(c, name, x, y, size, color, medium, Paint.Align.LEFT, 0.04f, width);
+            return;
+        }
+        int cut = -1;
+        for (int i = 1; i < name.length(); i++) {
+            if (name.charAt(i) != ' ') continue;
+            text.setTextSize(size);
+            text.setTypeface(medium);
+            text.setLetterSpacing(0.04f);
+            if (text.measureText(name.substring(0, i)) <= width) cut = i;
+        }
+        if (cut < 0) {
+            label(c, name, x, y, size, color, medium, Paint.Align.LEFT, 0.04f, width);
+            return;
+        }
+        label(c, name.substring(0, cut), x, y, size, color, medium, Paint.Align.LEFT, 0.04f, width);
+        label(c, name.substring(cut + 1), x, y + size * 1.08f, size, color, medium, Paint.Align.LEFT, 0.04f, width);
+    }
+
+    // ---- turning the page
+
+    // The slide to a page (or back), a little on each frame
+    private void step() {
+        float t = Math.min(1, (System.nanoTime() - animStart) / (ANIM_MS * 1e6f)), e = 1 - (1 - t) * (1 - t) * (1 - t);
+        drag = animFrom + (animTo - animFrom) * e;
+        if (t >= 1) finishSlide();
+        else invalidate();
+    }
+
+    private void finishSlide() {
+        if (animating && animDir != 0) page = Math.max(0, Math.min(pageCount - 1, page + animDir));
+        animating = false;
+        drag = 0;
+    }
+
+    // dir: +1 the next page, -1 the one before, 0 back to this one
+    private void slideTo(int dir) {
+        animating = true;
+        animStart = System.nanoTime();
+        animFrom = drag;
+        animDir = dir;
+        animTo = dir > 0 ? -W : dir < 0 ? W : 0;
+        invalidate();
+    }
+
+    // ---- touch
+
+    private float sheetXOf(float vx) {
+        return (vx - sheetX) / sheetScale;
+    }
+
+    private float sheetYOf(float vy) {
+        return (vy - sheetY) / sheetScale;
+    }
+
+    // The pouch slot of the button of the page shown at a point of the sheet, -1 when there is none.
+    private int slotAt(float x, float y) {
+        if (drag != 0 || animating) return -1;
         for (int i = 0; i < cellCount; i++)
             if (cells[i].contains(x, y)) return cellSlots[i];
         return -1;
     }
 
-    // A tap on an item (down and up on the same one) uses it.
     @Override
     public boolean onTouchEvent(MotionEvent e) {
+        float x = sheetXOf(e.getX()), y = sheetYOf(e.getY());
         int was = pressed;
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
-                pressed = slotAt(e.getX(), e.getY());
+                if (animating) finishSlide();
+                tracking = y >= POUCH_TOP && state != null && "quest".equals(state.optString("place"));
+                swiping = false;
+                downX = x;
+                downY = y;
+                downTime = e.getEventTime();
+                pressed = tracking ? slotAt(x, y) : -1;
                 break;
             case MotionEvent.ACTION_MOVE:
-                if (pressed >= 0 && slotAt(e.getX(), e.getY()) != pressed) pressed = -1;
+                if (!tracking) break;
+                float dx = x - downX, dy = y - downY;
+                if (!swiping && Math.abs(dx) > SWIPE_SLOP && Math.abs(dx) > Math.abs(dy)) swiping = true;
+                if (swiping || Math.abs(dy) > TAP_SLOP) pressed = -1;  // (a finger that has set off is not tapping)
+                if (swiping) {
+                    boolean end = (dx < 0 && page >= pageCount - 1) || (dx > 0 && page <= 0);
+                    drag = Math.max(-W, Math.min(W, end ? dx * 0.3f : dx));  // (stretches, but not far, past the last page)
+                    invalidate();
+                }
                 break;
             case MotionEvent.ACTION_UP:
-                if (pressed >= 0 && slotAt(e.getX(), e.getY()) == pressed) Companion.useItem(pressed);
+                if (!tracking) break;
+                if (swiping) {
+                    float moved = x - downX;
+                    boolean quick = e.getEventTime() - downTime < FLING_MS && Math.abs(moved) >= FLING_MIN;
+                    int dir = moved < 0 ? 1 : -1;
+                    boolean go = (Math.abs(moved) >= SWIPE_COMMIT || quick) && page + dir >= 0 && page + dir < pageCount;
+                    slideTo(go ? dir : 0);
+                } else if (pressed >= 0 && slotAt(x, y) == pressed && Math.abs(x - downX) < TAP_SLOP && Math.abs(y - downY) < TAP_SLOP) {
+                    Companion.useItem(pressed);
+                }
                 pressed = -1;
+                tracking = swiping = false;
                 break;
             case MotionEvent.ACTION_CANCEL:
                 pressed = -1;
+                if (swiping) slideTo(0);
+                tracking = swiping = false;
                 break;
             default:
                 break;

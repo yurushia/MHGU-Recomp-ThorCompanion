@@ -273,6 +273,18 @@ test-actions: $(LIB_STAMPS)
 	$(CC) $(RTFLAGS) tests/test_actions.c runtime/actions.c runtime/config.c runtime/config_store.c $(SDL_LIBS) -lm -o $(O)/settings-test/test-actions$(if $(filter windows,$(PLATFORM)),.exe)
 	$(O)/settings-test/test-actions$(if $(filter windows,$(PLATFORM)),.exe)
 
+# The companion panel (docs/THOR-COMPANION.md). test-companion: the reader's timer and one-touch item use against made-up
+# game memory and a small model of the hunter (Linux or WSL: the game's window is mapped with mmap). test-companion-view:
+# the panel's drawing and touches (taps, swipes, pages) through stand-ins for Android's classes; a JDK is all it needs.
+.PHONY: test-companion test-companion-view
+test-companion:
+	@mkdir -p $(O)/companion-test
+	$(CC) -O1 -g -Wall -Iruntime tests/test_companion.c runtime/hle/companion.c -lpthread -o $(O)/companion-test/test-companion
+	$(O)/companion-test/test-companion
+
+test-companion-view:
+	tests/companion-view/run.sh $(O)/companion-view
+
 # Engine modules (docs/ENGINE-MODULES.md). example-engine-module builds the example into the folder layout engine_modules/
 # expects; test-engine-modules builds the loader (runtime/engine_module.c) into a host program and checks it against test
 # modules - one that loads, and the ways one can fail - without the game files.
