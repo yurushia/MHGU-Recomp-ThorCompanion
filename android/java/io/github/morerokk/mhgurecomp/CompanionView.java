@@ -1,6 +1,6 @@
 // What the companion panel draws (Companion.java): the quest's time and area, the hunter's HP, stamina and sharpness,
 // the large monsters' HP and the item bar; in a town the hunter and the town. Laid out on a 1240 x 1080 sheet (the
-// AYN Thor's lower screen) that is scaled to fit whatever the display is. Display only: touches do nothing yet.
+// AYN Thor's lower screen) that is scaled to fit whatever the display is. A touch on an item of the item bar uses it (Companion.useItem).
 package io.github.morerokk.mhgurecomp;
 
 import android.content.Context;
@@ -10,6 +10,7 @@ import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.text.TextPaint;
 import android.text.TextUtils;
+import android.view.MotionEvent;
 import android.view.View;
 
 import org.json.JSONArray;
@@ -20,7 +21,7 @@ final class CompanionView extends View {
     private static final float W = 1240, H = 1080, M = 40;
     private static final int BG = 0xff14161a, CARD = 0xff1f2228, TRACK = 0xff2c3038, TEXT = 0xfff2efe6, DIM = 0xff9a9ca3,
             ACCENT = 0xffc58a2e, GREEN = 0xff58b368, YELLOW = 0xffe0b93b, RED = 0xffd2553f, HP_RED = 0xff9c3a2e,
-            STAMINA = 0xffe6c84a, SHARP = 0xff6fb7d9;
+            STAMINA = 0xffe6c84a, SHARP = 0xff6fb7d9, USING = 0xff5a4320;
     // By quest stage, as runtime/hle/presence.c
     private static final String[] STAGES = {
         null, "Jurassic Frontier", "Verdant Hills", "Arctic Ridge", "Misty Peaks", "Dunes", "Deserted Island",
@@ -39,6 +40,11 @@ final class CompanionView extends View {
     private final RectF r = new RectF();
     private String last = "";
     private JSONObject state;
+    // The item bar's cells as last drawn (sheet coordinates) and their pouch slots; the cell a finger is on (-1: none)
+    private final RectF[] cells = new RectF[24];
+    private final int[] cellSlots = new int[24];
+    private int cellCount, pressed = -1;
+    private float sheetScale = 1, sheetX, sheetY;
 
     CompanionView(Context context) {
         super(context);
@@ -97,7 +103,11 @@ final class CompanionView extends View {
         c.drawColor(BG);
         float scale = Math.min(getWidth() / W, getHeight() / H);
         if (scale <= 0) return;
-        c.translate((getWidth() - W * scale) / 2, (getHeight() - H * scale) / 2);
+        sheetScale = scale;
+        sheetX = (getWidth() - W * scale) / 2;
+        sheetY = (getHeight() - H * scale) / 2;
+        cellCount = 0;
+        c.translate(sheetX, sheetY);
         c.scale(scale, scale);
         JSONObject s = state;
         String place = s != null ? s.optString("place") : "";
@@ -185,7 +195,14 @@ final class CompanionView extends View {
             if (it == null) continue;
             float x = M + (i % cols) * (cw + gap), y = gridTop + (i / cols) * (ch + gap);
             boolean selected = it.optBoolean("sel");
-            box(c, x, y, cw, ch, 18, CARD);
+            int slot = it.optInt("slot", -1);
+            boolean using = slot >= 0 && slot == s.optInt("using", -1);
+            if (cellCount < cells.length && slot >= 0) {
+                if (cells[cellCount] == null) cells[cellCount] = new RectF();
+                cells[cellCount].set(x, y, x + cw, y + ch);
+                cellSlots[cellCount++] = slot;
+            }
+            box(c, x, y, cw, ch, 18, using ? USING : slot == pressed ? TRACK : CARD);
             if (selected) {
                 stroke.setColor(ACCENT);
                 stroke.setStrokeWidth(5);
@@ -198,5 +215,38 @@ final class CompanionView extends View {
                   Paint.Align.LEFT, cw - 36);
             label(c, "x" + it.optInt("n"), x + cw - 18, y + ch - ch * 0.16f, big, TEXT, true, Paint.Align.RIGHT, 0);
         }
+    }
+
+    // The pouch slot of the item bar's cell at a point of the view, -1 when there is none.
+    private int slotAt(float vx, float vy) {
+        float x = (vx - sheetX) / sheetScale, y = (vy - sheetY) / sheetScale;
+        for (int i = 0; i < cellCount; i++)
+            if (cells[i].contains(x, y)) return cellSlots[i];
+        return -1;
+    }
+
+    // A tap on an item (down and up on the same one) uses it.
+    @Override
+    public boolean onTouchEvent(MotionEvent e) {
+        int was = pressed;
+        switch (e.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                pressed = slotAt(e.getX(), e.getY());
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if (pressed >= 0 && slotAt(e.getX(), e.getY()) != pressed) pressed = -1;
+                break;
+            case MotionEvent.ACTION_UP:
+                if (pressed >= 0 && slotAt(e.getX(), e.getY()) == pressed) Companion.useItem(pressed);
+                pressed = -1;
+                break;
+            case MotionEvent.ACTION_CANCEL:
+                pressed = -1;
+                break;
+            default:
+                break;
+        }
+        if (pressed != was) invalidate();
+        return true;
     }
 }

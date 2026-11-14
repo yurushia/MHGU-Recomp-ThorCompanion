@@ -4,7 +4,8 @@
 //    "hunter":{"name":"..","weapon":7,"hp":100,"hpMax":150,"hpRed":110,"st":900.0,"stMax":900.0,"sharp":300,"sharpMax":450,
 //              "x":0.0,"y":0.0,"z":0.0},
 //    "monsters":[{"id":2,"name":"Rathalos","hp":1234,"hpMax":4000,"x":0.0,"y":0.0,"z":0.0}],
-//    "items":[{"slot":0,"id":9,"n":10,"name":"Potion","sel":true}]}
+//    "items":[{"slot":0,"id":9,"n":10,"name":"Potion","sel":true}],"using":0}
+// "using": the pouch slot of an item asked for with companion_use that the game hasn't taken yet (absent: none).
 // place: "quest", "town" (then "town": its type, 0 Hub, 1-6 villages, 7 Hunters' Pub) or "menu" (no hunter).
 //   MHGU_COMPANION_LOG=1   log the text once a second (to check the values on any platform)
 //
@@ -19,6 +20,14 @@
 //   (limit * 60 * rate - passed) / rate seconds, rate = the float at *0x2326764 +0x38 (0x269b04 and others).
 // - The pouch (*0x1a584b8): from +0x1a, 4 bytes a slot (0..0x31): u16 item, s16 count. The item bar's order is the
 //   game's own walk (0x4880fc: player, slot, 0 right), from the empty place 0x28 until it comes round.
+//
+// Using an item (companion_use, a touch on the panel): as the RadialMenu Forge plugin does it. On the game's thread, once
+// the hunter may pick an item (the item bar handler's own checks, itembar.c: 0x47bcd0 == 1, 0x47b918 == 0, vfunc +0x230
+// (player, 1) == 1), the slot is written to +0x3298 and Y is held on the pad for a moment (companion_buttons, added to
+// what GetNpadState gives). The game took it when the hunter turns busy or the slot's count drops; else Y is pressed
+// again, a few times. Given up when the hunter isn't free within a few seconds, or on leaving the quest.
+// Not known yet: with the weapon out Y may only sheathe it (the hunter turns busy, which counts as taken here), and with
+// [Actions] Enable=1 the pad's Y reaches the game through the action layer, which may not pass it on.
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -54,6 +63,9 @@
 #define NO_ITEM_SLOT   0x28u
 #define POUCH_SLOTS    0x32u
 #define FN_ITEM_NEXT   0x4880fcu
+#define FN_PL_IS_LOCAL 0x47bcd0u    // (player) 1: ours
+#define FN_PL_BUSY     0x47b918u    // (player) 0: free
+#define VF_CAN_SELECT  0x230u      // vfunc (player, 1) 1: may pick an item now
 #define FN_PROWLER_BAR 0x1417d68u
 #define VF_PROWLER_BAR 0x5c4u      // holds FN_PROWLER_BAR in uOtomo's vtable only (itembar.c)
 #define EN_LIST        0x1cu
@@ -72,10 +84,20 @@
 #define QD_MONSTERS    0x64u       // 5 of 14 bytes, u16 monster id first
 #define TICK_NS        100000000ull
 #define MAX_ITEMS      24
+#define USE_WAIT_NS    3000000000ull  // how long a use waits for the hunter to be free
+#define USE_HOLD_NS    100000000ull   // Y held
+#define USE_TAKEN_NS   400000000ull   // how long the game has to take a press before the next one
+#define USE_TRIES      4
+#define BTN_Y_BIT      (1ull << 3)    // NpadButton Y (input.h)
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_json[8192];
 static size_t g_len;
+
+// A use asked for: g_use_slot by any thread (-1: none), the rest by the game's thread only.
+static int g_use_slot = -1;
+static int u_slot = -1, u_phase, u_tries, u_count;
+static uint64_t u_deadline, u_hold_until;
 
 static bool sane(uint32_t a) { return a >= 0x08000000u && a < 0xF0000000u && !(a & 3); }
 
@@ -124,6 +146,53 @@ static uint32_t call(Cpu *c, uint32_t fn, uint32_t r0, uint32_t r1, uint32_t r2)
     uint32_t v = c->r[0];
     for (int i = 0; i < 16; i++) c->r[i] = saved[i];
     return v;
+}
+
+static uint32_t local_player(void) {
+    uint32_t gc = LD32(G_GAMECONTROL), sp = LD32(G_SPLAYER);
+    if (!sane(gc) || !sane(sp) || LD8(gc + GC_TOWN) != TOWN_NONE) return 0;  // (in a quest only)
+    uint32_t slot = LD32(gc + GC_SLOT), pl = slot < 4 ? LD32(sp + 0x1c + 4 * slot) : 0, vt = sane(pl) ? LD32(pl) : 0;
+    return vt && LD32(vt + VF_PROWLER_BAR) != FN_PROWLER_BAR ? pl : 0;  // (not a Prowler: its bar is another one)
+}
+
+static int pouch_count(int slot) {
+    uint32_t pouch = LD32(G_POUCH);
+    return sane(pouch) ? (int16_t)LD16(pouch + 0x1c + 4 * (uint32_t)slot) : 0;
+}
+
+void companion_use(int slot) {
+    if (slot < 0 || slot >= (int)POUCH_SLOTS || slot == (int)NO_ITEM_SLOT) return;
+    pthread_mutex_lock(&g_lock);
+    g_use_slot = slot;
+    pthread_mutex_unlock(&g_lock);
+}
+
+// Each time the game reads player 1's pad: steps a use that is waiting; returns the buttons to add to the pad (Y).
+uint64_t companion_buttons(Cpu *c) {
+    uint64_t now = plat_now_ns();
+    pthread_mutex_lock(&g_lock);
+    int asked = g_use_slot;
+    g_use_slot = -1;
+    pthread_mutex_unlock(&g_lock);
+    if (asked >= 0) u_slot = asked, u_phase = 0, u_tries = 0, u_deadline = now + USE_WAIT_NS, u_hold_until = 0;
+    if (u_slot < 0) return 0;
+    uint32_t pl = local_player();
+    if (!pl || pouch_count(u_slot) <= 0) { u_slot = -1; return 0; }  // (left the quest; nothing in that slot)
+    if (u_phase == 0) {
+        uint32_t can = LD32(LD32(pl) + VF_CAN_SELECT);
+        if (call(c, FN_PL_IS_LOCAL, pl, 0, 0) == 1 && call(c, FN_PL_BUSY, pl, 0, 0) == 0 && can && call(c, can, pl, 1, 0) == 1) {
+            ST16(pl + PL_ITEM_SLOT, u_slot);
+            u_count = pouch_count(u_slot);
+            u_phase = 1, u_tries++, u_hold_until = now + USE_HOLD_NS, u_deadline = now + USE_TAKEN_NS;
+        } else if (now >= u_deadline) u_slot = -1;  // (never free)
+    } else if (now >= u_hold_until) {
+        if (call(c, FN_PL_BUSY, pl, 0, 0) != 0 || pouch_count(u_slot) < u_count) u_slot = -1;  // (the game took it)
+        else if (now >= u_deadline) {
+            if (u_tries >= USE_TRIES) u_slot = -1;
+            else u_phase = 0, u_deadline = now + USE_WAIT_NS;
+        }
+    }
+    return u_slot >= 0 && u_phase == 1 && now < u_hold_until ? BTN_Y_BIT : 0;
 }
 
 static void put_hunter(Out *o, uint32_t pl, uint32_t pd, bool quest) {
@@ -223,6 +292,7 @@ void companion_tick(Cpu *c) {
         put_hunter(&o, pl, pd, true);
         put_monsters(&o, qd);
         put_items(&o, c, pl);
+        if (u_slot >= 0) put(&o, ",\"using\":%d", u_slot);
     } else {
         put(&o, ",\"place\":\"town\",\"town\":%u", town);
         put_hunter(&o, pl, pd, false);
@@ -258,5 +328,11 @@ JNIEXPORT jbyteArray JNICALL Java_io_github_morerokk_mhgurecomp_Companion_snapsh
     jbyteArray a = (*env)->NewByteArray(env, (jsize)n);
     if (a) (*env)->SetByteArrayRegion(env, a, 0, (jsize)n, (const jbyte *)text);
     return a;
+}
+
+// Companion.use(slot): a touch on an item of the panel.
+JNIEXPORT void JNICALL Java_io_github_morerokk_mhgurecomp_Companion_use(JNIEnv *env, jclass cls, jint slot) {
+    (void)env, (void)cls;
+    companion_use((int)slot);
 }
 #endif

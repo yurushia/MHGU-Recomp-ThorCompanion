@@ -2,7 +2,8 @@
 
 On a device with two displays the Android app shows a panel on the display the game is not on: the quest's time left
 and area, the hunter's HP, stamina and sharpness, the large monsters' HP and the item bar. With one display nothing
-changes. It only reads the game and only shows: touches do nothing yet.
+changes. A touch on an item of the item bar uses it: the hunter takes it as if it had been picked on the bar and Y
+pressed.
 
 ![The panel with sample values](images/thor-companion-preview.png)
 
@@ -21,5 +22,11 @@ against android-35; the offsets are from reading the game's code (main 1.4.0) an
 Checking the values without a second screen, on any platform: `MHGU_COMPANION_LOG=1` (Android: a line in `env.txt`)
 logs the JSON once a second as `[companion] {...}` in `log.txt`.
 
-Not there yet: using an item by touching it, the map with the hunter's and the monsters' positions (the positions are
+Using an item (`companion_use` / `companion_buttons`, after the RadialMenu Forge plugin): once the hunter may pick an
+item the slot is selected and Y is held on the pad for a moment; if the game didn't take it (the hunter not busy, the
+count unchanged) Y is pressed again, up to four times. To check on a device: with the weapon out Y may only sheathe it
+(a second touch would then be needed), `[Actions] Enable=1` may not pass the pad's Y on, and a touch on the second
+display must not take the controller's events away from the game.
+
+Not there yet: the map with the hunter's and the monsters' positions (the positions are
 already in the JSON), other hunters' HP, a Prowler's item bar.

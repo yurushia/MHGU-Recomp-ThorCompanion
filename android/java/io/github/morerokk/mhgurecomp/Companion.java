@@ -1,7 +1,7 @@
 // The companion panel on a second screen (AYN Thor: the lower one): a Presentation of this activity on the other
 // display, showing what runtime/hle/companion.c reads from the game (the quest's time, the hunter's bars, the large
-// monsters' HP, the item bar). With one display nothing happens. The panel's window never takes the focus, so the
-// controller's and the keyboard's events stay with the game.
+// monsters' HP, the item bar); a touch on an item uses it. With one display nothing happens. The panel's window never
+// takes the focus, so the controller's and the keyboard's events stay with the game.
 package io.github.morerokk.mhgurecomp;
 
 import android.app.Activity;
@@ -20,6 +20,15 @@ import java.nio.charset.StandardCharsets;
 final class Companion implements DisplayManager.DisplayListener {
     // runtime/hle/companion.c: the state as JSON (UTF-8), null before the first one
     private static native byte[] snapshot();
+    // Use the item in a pouch slot as soon as the hunter may (a touch on it: CompanionView)
+    private static native void use(int slot);
+
+    static void useItem(int slot) {
+        try {
+            use(slot);
+        } catch (UnsatisfiedLinkError e) {  // (the runtime isn't loaded)
+        }
+    }
 
     private static final long POLL_MS = 100;
 

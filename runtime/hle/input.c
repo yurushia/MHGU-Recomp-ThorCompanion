@@ -91,6 +91,7 @@ static void fill_state(Cpu *c) {
     act_delivered.ptr_down = act_pub.ptr_down, act_delivered.ptr_valid = act_pub.ptr_valid;
     memset(act_pub.pulse, 0, sizeof act_pub.pulse);
     pthread_mutex_unlock(&act_lock);
+    b |= companion_buttons(c);  // (an item touched on the second screen's panel: Y, for a moment)
     int32_t lx = st[0], ly = st[1], rx = st[2], ry = st[3];
     memcpy(s + 8, &b, 8);
     memcpy(s + 16, &lx, 4);
