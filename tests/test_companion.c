@@ -561,6 +561,30 @@ static void test_pad_hook(void) {
         CHECK(LD32(OUT) == 0);
     }
     ST32(IDP, 0);
+    // the id passed by value (RadialMenu's hook never reads it as a pointer): player 1 is 0, and the press still goes in
+    reset();
+    ST16(POUCH + 0x1c + 4 * 5, 10), G.n_used = 0;  // (a use left waiting by the test before ran out in reset())
+    companion_use(5);
+    g_orig_word = 0;
+    int by_value_y = 0;
+    for (int i = 0; i < 200; i++) {
+        g_now += 16000000ull;
+        g_cpu.r[2] = 0, g_cpu.r[3] = OUT;
+        g_hook_fn(&g_cpu);
+        uint32_t w = LD32(OUT);
+        by_value_y += (w & 0x8000u) != 0;
+        model_poll(w);
+    }
+    CHECK(by_value_y >= 1 && slot_count(5) == 9);
+    // and a pad that is not player 1, by value, is left alone
+    reset();
+    companion_use(5);
+    g_orig_word = 0;
+    for (int i = 0; i < 100; i++) {
+        g_cpu.r[2] = 0x20, g_cpu.r[3] = OUT;
+        g_hook_fn(&g_cpu);
+        CHECK(LD32(OUT) == 0);
+    }
     // nothing asked: the poll's word is left exactly as it was
     reset();
     g_orig_word = 0x1234;

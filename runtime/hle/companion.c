@@ -377,7 +377,10 @@ static bool plausible(uint32_t a) { return a >= 0x00100000u && a < 0xF0000000u &
 static void pad_poll(Cpu *c) {
     uint32_t id_ptr = c->r[2], out = c->r[3];
     fnhook_call_original(c, FN_PAD_POLL);
-    if (!plausible(out) || !plausible(id_ptr) || LD32(id_ptr) != 0) return;  // (player 1's pad only)
+    // Player 1's pad only. The id is passed as a pointer in some builds and by value in RadialMenu's (which never reads it): both
+    // are taken, as requiring a pointer here meant that when it is a plain number (0) the press was never added at all.
+    uint32_t id = plausible(id_ptr) ? LD32(id_ptr) : id_ptr;
+    if (!plausible(out) || id != 0) return;
     uint32_t add = use_step(c);
     if (add) ST32(out, LD32(out) | add);
 }
