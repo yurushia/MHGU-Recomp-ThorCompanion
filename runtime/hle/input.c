@@ -7,6 +7,7 @@
 #include "../kernel.h"
 #include "../mods.h"
 #include "chat.h"
+#include "companion.h"
 #include "input.h"
 #include "../net/discord.h"
 #include "../net/net.h"
@@ -75,6 +76,7 @@ static void fill_state(Cpu *c) {
     chat_tick(c);  // (a line typed after "/": sent as a shoutout is, runtime/hle/chat.c)
     villagehub_tick(c);  // (the Village quest text bundle held at the Hub / Pub, let go when leaving: villagehub.c)
     presence_tick();  // (Discord Rich Presence, once a second: runtime/hle/presence.c)
+    companion_tick(c);  // (the second screen's panel, ten times a second: runtime/hle/companion.c)
     uint8_t *s = ARGP(0);
     uint32_t id = LD32(ARG(1));
     memset(s, 0, 40);

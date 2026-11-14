@@ -109,6 +109,8 @@ static const char *monster_name(uint16_t id) {
     return NULL;
 }
 
+const char *presence_monster_name(uint16_t id) { return monster_name(id); }
+
 // The quest's name (string 0 of its text), kept for the quest being played.
 static const char *quest_name(uint32_t quest) {
     static Gmd g;

@@ -26,6 +26,8 @@ void discord_init(void);
 void discord_set_activity(const DiscordActivity *a);
 // runtime/hle/presence.c: the game's state into an activity (each frame, from the game's input polling)
 void presence_tick(void);
+// A monster's English name from the game's texts, by its id (variant << 8 | number); NULL when unknown. The game's thread.
+const char *presence_monster_name(uint16_t id);
 
 #ifdef __cplusplus
 }

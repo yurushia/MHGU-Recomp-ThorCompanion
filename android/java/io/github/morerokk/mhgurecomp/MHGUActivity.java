@@ -3,7 +3,8 @@
 // the bars stayed over the game on some devices. A swipe from the edge still shows them for a moment (and they hide
 // again by themselves).
 // It also asks to share the log after a crash (LogActivity), before the game starts and writes a new one, and shows
-// SDL_ShowMessageBox's boxes as plain AlertDialogs (messageboxCreateAndShow).
+// SDL_ShowMessageBox's boxes as plain AlertDialogs (messageboxCreateAndShow), and puts the companion panel on a second
+// screen when the device has one (Companion.java).
 package io.github.morerokk.mhgurecomp;
 
 import android.app.AlertDialog;
@@ -119,6 +120,22 @@ public class MHGUActivity extends SDLActivity {
             }
         });
         dialog.show();
+    }
+
+    // The companion panel on a second screen, while the game is on screen (Companion.java; nothing with one display)
+    private Companion companion;
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        if (companion == null) companion = new Companion(this);
+        companion.start();
+    }
+
+    @Override
+    protected void onStop() {
+        if (companion != null) companion.stop();
+        super.onStop();
     }
 
     @Override
