@@ -3,7 +3,7 @@
 //   {"v":1,"place":"quest","quest":101,"stage":1,"zone":4,"time":{"left":2987,"limit":3000},
 //    "hunter":{"name":"..","weapon":7,"hp":100,"hpMax":150,"hpRed":110,"st":900.0,"stMax":900.0,"sharp":300,"sharpMax":450,
 //              "x":0.0,"y":0.0,"z":0.0},
-//    "monsters":[{"id":2,"name":"Rathalos","hp":1234,"hpMax":4000,"x":0.0,"y":0.0,"z":0.0}],
+//    "monsters":[{"id":2,"name":"Rathalos","zone":4,"hp":1234,"hpMax":4000,"x":0.0,"y":0.0,"z":0.0}],
 //    "items":[{"slot":0,"id":9,"n":10,"name":"Potion","sel":true}],"using":0,"step":"sheathe"}
 // "using": the pouch slot of an item asked for with companion_use that the game hasn't taken yet (absent: none);
 // "step": where that has got to: "wait" (for the hunter to be free), "sheathe" (putting the weapon away), "use".
@@ -90,6 +90,7 @@
 #define EN_COUNT       10
 #define EN_INFO        0x1428u
 #define EN_NUMBER      0xb5f4u
+#define EN_AREA        0x1054u     // monster: its zone, u8 (as PL_ZONE; emsync.c reads the same byte)
 #define INFO_POS       0x40u
 #define INFO_ID        0x1b6u
 #define INFO_HP        0x370u
@@ -318,7 +319,8 @@ static void put_monsters(Out *o, uint32_t qd) {
         const char *name = id ? presence_monster_name((uint16_t)id) : NULL;
         put(o, "%s{\"id\":%u,\"name\":", n++ ? "," : "", id);
         put_str(o, name ? name : "");
-        put(o, ",\"hp\":%d,\"hpMax\":%d,\"x\":%.1f,\"y\":%.1f,\"z\":%.1f}", hp < 0 ? 0 : hp > max ? max : hp, max,
+        put(o, ",\"zone\":%u,\"hp\":%d,\"hpMax\":%d,\"x\":%.1f,\"y\":%.1f,\"z\":%.1f}", LD8(en + EN_AREA),
+            hp < 0 ? 0 : hp > max ? max : hp, max,
             (double)finite_or_0(LDF(info + INFO_POS)), (double)finite_or_0(LDF(info + INFO_POS + 4)),
             (double)finite_or_0(LDF(info + INFO_POS + 8)));
     }

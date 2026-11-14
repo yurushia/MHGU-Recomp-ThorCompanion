@@ -9,7 +9,8 @@ classes=$out/classes
 rm -rf "$classes" && mkdir -p "$classes"
 log=$out/run.log
 javac -nowarn -d "$classes" $(find "$here/stubs" "$here/src" -name '*.java') \
-    "$repo/android/java/io/github/morerokk/mhgurecomp/CompanionView.java" > "$log" 2>&1 || { grep -v "^Picked up" "$log"; exit 1; }
+    "$repo/android/java/io/github/morerokk/mhgurecomp/CompanionView.java" \
+    "$repo/android/java/io/github/morerokk/mhgurecomp/AreaMap.java" > "$log" 2>&1 || { grep -v "^Picked up" "$log"; exit 1; }
 status=0
 java -Djava.awt.headless=true -cp "$classes" io.github.morerokk.mhgurecomp.Check "$repo/android/assets" "$out" > "$log" 2>&1 || status=1
 grep -v "^Picked up" "$log"

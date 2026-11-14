@@ -22,6 +22,8 @@ public class Canvas { public final Graphics2D g;
     else g.fill(s); }
   public void drawRect(float l, float t, float r, float b, Paint p) { draw(new Rectangle2D.Float(l, t, r - l, b - t), p); }
   public void drawPath(Path path, Paint p) { draw(path.p, p); }
+  public void drawRoundRect(RectF r, float rx, float ry, Paint p) { draw(new RoundRectangle2D.Float(r.left, r.top, r.right - r.left, r.bottom - r.top, rx * 2, ry * 2), p); }
+  public boolean clipPath(Path path) { g.clip(path.p); return true; }
   public void drawCircle(float x, float y, float r, Paint p) { draw(new Ellipse2D.Float(x - r, y - r, 2 * r, 2 * r), p); }
   public void drawLine(float x0, float y0, float x1, float y1, Paint p) { Paint.Style s = p.style; p.style = Paint.Style.STROKE; draw(new Line2D.Float(x0, y0, x1, y1), p); p.style = s; }
   public void drawArc(RectF r, float start, float sweep, boolean center, Paint p) { draw(new Arc2D.Float(r.left, r.top, r.right - r.left, r.bottom - r.top, -start, -sweep, center ? Arc2D.PIE : Arc2D.OPEN), p); }

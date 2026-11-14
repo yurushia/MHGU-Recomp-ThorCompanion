@@ -1,13 +1,43 @@
 # Companion panel on a second screen (AYN Thor)
 
 On a device with two displays the Android app shows a panel on the display the game is not on. With one display nothing
-changes. The panel shows the quest's time left (counting down) and the area in one small band, the hunter's HP, stamina
-and sharpness, the large monsters' HP, and, in most of the screen, the item pouch.
+changes. The panel is laid out like the 3DS games' bottom screen: a green title bar with the quest's stage and area, a stone
+panel with the hunter (a clock of the time left, health, stamina, sharpness, a ribbon with the name and weapon), a map of the
+area with the hunter and the large monsters on it, a panel for each large monster (its health, the capture point), and, in
+the lower part of the screen, the item pouch as the item bar's black and gold frames.
 
 ![The panel with sample values](images/thor-companion-preview.png)
 
 (The picture is `CompanionView.java` itself drawing sample values on a PC, through stand-ins for Android's drawing
-classes: the layout is the real one, the fonts' rendering and the glow are only close. Not a capture from a device.)
+classes: the layout is the real one, the fonts' rendering and the glow are only close. Not a capture from a device. The map
+shows the plain radar here, because the picture is made without the game's files.)
+
+## The map
+
+`AreaMap.java` reads the shape of the hunter's area from the player's own game files: `romfs/nativeNX/loc/arc/stage/map_com/m<stage>.arc`
+(in the app's files folder, `data/romfs/nativeNX`) has, for every area, its ground and its water collision
+(`stage/m01d/m01a04d/collision/m01a04d-a-g00`, `...-a-w00`), in the same world coordinates the hunter's and the monsters'
+positions are in. Nothing of the game is kept in the app or in this repository: the triangles are read when an area is
+entered (in the background, a few areas are kept in memory) and drawn from above. The file's layout is described at the top
+of `AreaMap.java`; it was found by reading all 12 areas of Jurassic Frontier.
+
+* Of the pieces of ground an area is made of (triangles that share a corner are one piece), the ones the hunter or a monster has
+  stood on are drawn light and the rest dark. The first sight of an area is what the hunter stands on.
+* The monsters shown on the map are the ones whose `zone` (the monster's zone byte, +0x1054, as the hunter's; `emsync.c` reads the
+  same one) is the hunter's: positions are in each area's own coordinates, so a monster in another area cannot be placed. Its
+  card says which area it is in. Monsters are always shown, met or not (the game's own map only marks the ones you have found:
+  that is a flag of the game's UI, which this panel does not use; MapAssist, the plugin that always marks monsters on the game's
+  map, works on that UI layer instead).
+* A tap on the map zooms in on the hunter (about 3200 world units across) and back. A monster off the zoomed view is shown
+  at the edge, grey.
+* Without the game's files in the place the app looks in (or with an area it cannot read), a radar round the hunter is drawn
+  with the same markers.
+
+Known limits, not tested on a device: the map's orientation (which way is up) is the world's x to the right and z down, and may
+be the other way round or mirrored against the game's own map; the hunter's heading is not read, so the hunter is a dot; rocks
+and other things that are not ground are not drawn as holes (the files hold a coarser layer too, and the piece the hunter stands
+on is what is shown as ground); the sharpness gauge's colour bands are a fixed look, not the weapon's own steps (the fill is the
+real value).
 
 ## The item pouch
 
@@ -58,10 +88,11 @@ notes say for every weapon (the notes checked a Hammer), and that the second scr
 | `runtime/hle/companion.c`, `.h` | reads the game ten times a second on the game's thread (from the input polling, after `presence_tick`) into a JSON text, and runs the one-tap use; the header comment lists every offset and the JSON's fields |
 | `runtime/hle/companion_items.h` | item number -> English name (generated from the MHGU Modding wiki's Item IDs page) |
 | `android/java/.../Companion.java` | finds the other display, shows a `Presentation` there (its window never takes the focus), polls the JSON through JNI, passes a tap on |
-| `android/java/.../CompanionView.java` | draws the panel on a 1240 x 1080 sheet scaled to the display, and tells taps from swipes |
+| `android/java/.../CompanionView.java` | draws the panel on a 1240 x 1080 sheet scaled to the display, and tells taps from swipes (the pouch's page, its arrows, the map's zoom) |
+| `android/java/.../AreaMap.java` | the shape of an area from the player's own game files, for the map (see above) |
 | `android/assets/fonts/` | Barlow Condensed (SIL Open Font License), packed into the APK by `android/apk.mk`; without them the system's condensed face is used |
 | `tests/test_companion.c` | `make test-companion` (Linux or WSL): the timer, and the one-tap use against made-up game memory and a small model of the hunter (a move only while idle, a count that drops early, late or never, a weapon flag that flips at the start or the end of the move, a game that takes no Y) |
-| `tests/companion-view/` | `make test-companion-view` (a JDK is all it needs): `CompanionView.java` drawn on a PC and driven with touches (tap, jittery tap, swipe, short swipe, fling, vertical drag, taps outside the pouch, partial pages, scaling); writes the pictures to `obj/companion-view/` |
+| `tests/companion-view/` | `make test-companion-view` (a JDK is all it needs): `CompanionView.java` drawn on a PC and driven with touches (tap, jittery tap, swipe, short swipe, fling, vertical drag, taps outside the pouch, the arrows, partial pages, scaling, the map's zoom), and `AreaMap.java` reading a made-up game folder; writes the pictures to `obj/companion-view/` |
 
 ## Notes
 
@@ -71,5 +102,4 @@ notes say for every weapon (the notes checked a Hammer), and that the second scr
   the original app; its folder is `Android/data/io.github.yurushia.mhgurecomp.thor/files/` (where the README says
   `Android/data/io.github.morerokk.mhgurecomp/files/`).
 
-Not there yet: the map with the hunter's and the monsters' positions (the positions are already in the JSON), other
-hunters' HP, a Prowler's item bar.
+Not there yet: other hunters' HP, a Prowler's item bar, the hunter's heading on the map.

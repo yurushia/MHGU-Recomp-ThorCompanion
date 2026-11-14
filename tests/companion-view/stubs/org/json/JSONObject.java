@@ -19,6 +19,8 @@ public class JSONObject { final Map<String, Object> m = new LinkedHashMap<>(); p
   public int optInt(String k) { return optInt(k, 0); }
   public int optInt(String k, int d) { Object o = m.get(k); return o instanceof Double ? ((Double) o).intValue() : d; }
   public double optDouble(String k, double d) { Object o = m.get(k); return o instanceof Double ? (Double) o : d; }
+  public double optDouble(String k) { return optDouble(k, Double.NaN); }
+  public boolean has(String k) { return m.containsKey(k); }
   public boolean optBoolean(String k) { return Boolean.TRUE.equals(m.get(k)); }
   public JSONObject optJSONObject(String k) { Object o = m.get(k); return o instanceof JSONObject ? (JSONObject) o : null; }
   public JSONArray optJSONArray(String k) { Object o = m.get(k); return o instanceof JSONArray ? (JSONArray) o : null; } }

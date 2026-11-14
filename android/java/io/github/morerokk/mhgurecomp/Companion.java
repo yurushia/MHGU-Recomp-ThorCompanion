@@ -1,6 +1,6 @@
 // The companion panel on a second screen (AYN Thor: the lower one): a Presentation of this activity on the other
 // display, showing what runtime/hle/companion.c reads from the game (the quest's time, the hunter's bars, the large
-// monsters' HP, the item bar); a touch on an item uses it. With one display nothing happens. The panel's window never
+// monsters' HP and positions, the item bar); a touch on an item uses it. With one display nothing happens. The panel's window never
 // takes the focus, so the controller's and the keyboard's events stay with the game.
 package io.github.morerokk.mhgurecomp;
 
@@ -48,6 +48,9 @@ final class Companion implements DisplayManager.DisplayListener {
     void start() {
         if (started || displays == null) return;
         started = true;
+        // where the game's files are (the map of an area is read from them: AreaMap)
+        java.io.File files = FilesFolder.get(activity);
+        AreaMap.root = files != null ? new java.io.File(files, "data/romfs/nativeNX") : null;
         displays.registerDisplayListener(this, handler);
         show();
         handler.postDelayed(poll, POLL_MS);
