@@ -286,3 +286,10 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+---
+Whole-map pictures (android/assets/maps/map_01.png ... map_27.png)
+From the MHGU Database project (MHGenDatabase, Gathering Hall Studios, MIT licence, copyright (c) 2014 DavianCorp):
+https://github.com/gatheringhallstudios/MHGenDatabase . The artwork is based on Monster Hunter Generations Ultimate and belongs to
+Capcom; the MIT licence does not give rights to it. See android/assets/maps/NOTICE-maps.txt. Monster Hunter is a trademark of Capcom.

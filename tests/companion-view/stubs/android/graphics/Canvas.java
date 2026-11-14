@@ -27,6 +27,7 @@ public class Canvas { public final Graphics2D g;
   public void drawCircle(float x, float y, float r, Paint p) { draw(new Ellipse2D.Float(x - r, y - r, 2 * r, 2 * r), p); }
   public void drawLine(float x0, float y0, float x1, float y1, Paint p) { Paint.Style s = p.style; p.style = Paint.Style.STROKE; draw(new Line2D.Float(x0, y0, x1, y1), p); p.style = s; }
   public void drawArc(RectF r, float start, float sweep, boolean center, Paint p) { draw(new Arc2D.Float(r.left, r.top, r.right - r.left, r.bottom - r.top, -start, -sweep, center ? Arc2D.PIE : Arc2D.OPEN), p); }
+  public void drawBitmap(Bitmap b, Rect src, RectF dst, Paint p) { g.drawImage(b.img, Math.round(dst.left), Math.round(dst.top), Math.round(dst.right - dst.left), Math.round(dst.bottom - dst.top), null); }
   public void drawText(String s, float x, float y, Paint p) { Font f = p.font(); float w = p.measureText(s);
     if (p.align == Paint.Align.RIGHT) x -= w; else if (p.align == Paint.Align.CENTER) x -= w / 2;
     g.setFont(f); g.setPaint(new Color(p.color, true)); g.drawString(s, x, y); } }

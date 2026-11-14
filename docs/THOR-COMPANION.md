@@ -25,8 +25,15 @@ of `AreaMap.java`; it was found by reading all 12 areas of Jurassic Frontier.
   has stood on is drawn light, the rest of the ground (other levels, the land round the area) in a darker tone, and the walls
   (cliffs, rocks: the `-a-w00` files, which are walls and not water: they hold the faces that stand up) as dark lines.
 * **Zoom and pan.** The **+** and **-** buttons in the map's corner zoom in and out (x1, 2, 4, 8, 16); zoomed in, the map follows
-  the hunter until it is dragged, and the target button puts it back on the hunter. A tap on the map jumps between the whole area
-  and x4 on the hunter. A monster outside the view is shown grey at the edge.
+  the hunter until it is dragged, and the target button puts it back on the hunter. A monster outside the view is shown grey at the edge.
+* **THIS AREA | WHOLE MAP.** The control at the map's top left (or a tap on the map itself) switches what the map *contains*;
+  it is not a zoom. THIS AREA is the collision-file map above, true to scale, with exact positions. WHOLE MAP is the stage's
+  picture (`android/assets/maps/map_NN.png`, 27 stages, from MHGenDatabase, see `NOTICE-maps.txt`): every area of the stage,
+  including those the hunter is not in. The reader only has the hunter's own area loaded, and the game has no coordinates that
+  tie one area to the next, so the whole map cannot be built from the area files; the pictures are used instead. On it the hunter
+  and each large monster are marked **at the area they are in** (next to the area's number, `areas.csv`: found by
+  `tools/maps/make_anchors.py`, which reads the numbers off the pictures), not at an exact spot. Taps alternate between the two;
+  zoom and drag work in both. A stage with no picture says so and marks nothing. The 27 PNGs are Capcom artwork and are **not committed**: put `map_01.png` ... `map_27.png` into `android/assets/maps/` before building to have the whole map (without them the build works and WHOLE MAP says "no whole map for this stage").
 * **What was missing, and why (found by measuring the real files):** (1) the triangles of an area are not all wound the same way,
   and drawn as one filled path, overlapping triangles wound opposite ways cancel out: 51% of area 3's ground and 3% of area 8's
   disappeared. Every triangle is now wound the same way (`CompanionView.triangles`; the test `overlapping triangles wound both

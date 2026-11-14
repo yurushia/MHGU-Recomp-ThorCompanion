@@ -10,6 +10,7 @@
 #include "camera_jitter.h"
 #include "gamelib.h"
 #include "hle.h"
+#include "hle/companion.h"
 #include "hle/itembar.h"
 #include "hle/mousecam.h"
 #include "kernel.h"
@@ -85,6 +86,7 @@ static void boot(const char *root) {
     camjit_init();  // (FSR: the main camera and its jitter: runtime/hle/camera_jitter.c)
     mousecam_init();  // (mouse look on the hunt camera's angles: runtime/hle/mousecam.c)
     itembar_init();  // (the mouse wheel on the item bar: runtime/hle/itembar.c)
+    companion_init();  // (a touch on the second screen's item: its press goes into the pad poll, runtime/hle/companion.c)
     { void menuptr_init(void); menuptr_init(); }  // (the mouse in the pause menu: runtime/hle/menuptr.c)
     { void prompts_init(void); prompts_init(); }  // (keyboard and mouse button prompts: runtime/hle/prompts.c)
     { void input_view_init(void); input_view_init(); }  // (game-action rebinding, with [Actions] Enable=1: runtime/hle/input_view.c)

@@ -1,0 +1,16 @@
+MHGU area maps (27 PNG files, 1024 x 1024 pixels)
+
+maps/map_01.png ... map_27.png   the maps, unchanged from the MHGU Companion project
+maps.csv                         id, name and file name of each map (Jurassic Frontier = 1, Verdant Hills = 2, ...)
+
+The maps show the area numbers of each location. They were scaled up 4x from the originals so they stay sharp on
+high-resolution screens (the files are not edited in any other way).
+
+SOURCE AND RIGHTS - please read before using them in another app
+- The maps come from the MHGU Database project (MHGenDatabase) by Gathering Hall Studios, whose code is MIT-licensed
+  (copyright (c) 2014 DavianCorp): https://github.com/gatheringhallstudios/MHGenDatabase
+- The artwork itself is based on Monster Hunter Generations Ultimate and belongs to Capcom. The MIT licence of that project
+  does not give anyone rights to Capcom's artwork. Use in a free, non-commercial fan app is the usual case; publishing them
+  in a store app, or selling anything that includes them, is your own responsibility.
+- Monster Hunter is a trademark of Capcom. This is not an official product and is not endorsed by Capcom.
+- If you use them, credit MHGenDatabase / Gathering Hall Studios, and keep the MIT notice with any of that project's code or data.

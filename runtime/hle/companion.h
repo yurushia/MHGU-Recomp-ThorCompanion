@@ -11,5 +11,9 @@ void companion_tick(Cpu *c);
 size_t companion_snapshot(char *buf, size_t size);
 // Use the item in a pouch slot (as the JSON's items give it) as soon as the hunter may: any thread.
 void companion_use(int slot);
-// From GetNpadState for player 1 (the game's thread): steps a waiting use; the buttons to add to the pad meanwhile.
+// Hooks the game's pad poll (0xa6d34c): a use is pressed into the engine's button word there, a number of polls at a time.
+void companion_init(void);
+// One step of a use per poll of player 1's pad (the game's thread): the engine buttons to add to that poll (0x8000 Y, 0x200 R).
+uint32_t companion_pad_bits(Cpu *c);
+// The same press for GetNpadState, used only when the pad poll could not be hooked (otherwise 0): NpadButton bits.
 uint64_t companion_buttons(Cpu *c);

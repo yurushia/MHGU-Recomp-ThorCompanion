@@ -31,24 +31,30 @@
 // - The pouch (*0x1a584b8): from +0x1a, 4 bytes a slot (0..0x31): u16 item, s16 count. The item bar's order is the
 //   game's own walk (0x4880fc: player, slot, 0 right), from the empty place 0x28 until it comes round.
 //
-// Using an item (companion_use, a touch on the panel), in one touch, as the hunter's weapon needs:
-//   sheathed, or a Sword & Shield out (the one weapon that uses items drawn)   select the slot, press Y
-//   any other weapon out                                                       press Y to put it away, wait until it is
-//                                                                              away and the hunter idle, then as above
-// All on the game's thread (companion_buttons, from GetNpadState: its result is added to the pad's buttons, and Y is held
-// for a moment, which is how the game takes a press).
-// - The hunter's state: the weapon is out when the u8 at player +0x114c is 1; its action is the pair u16 +0x2506 / +0x250a
-//   (hle/input_view.c: idle is 1:0, a roll or an attack another pair). Y puts a drawn weapon away only when the hunter is
-//   idle (docs/GAME-ACTIONS.md), so Y waits for idle (but not for ever: three seconds after the touch it is pressed anyway).
-// - "May use an item" is the item bar handler's own test (itembar.c): 0x47bcd0 == 1, 0x47b918 == 0 (that one is bit 3 of the
-//   flags byte at +0x13cc, not a busy state, whatever itembar.c calls it) and vfunc +0x230 (player, 1) == 1. It does not look
-//   at the weapon, so with the weapon out it passes and a Y only sheathes.
-// - The game took a Y when the hunter's action is no longer the one it had at the press (or, for an item, the slot's count
-//   dropped: a consumable's does, a tool's doesn't, and some drop late). Then nothing is pressed again for that step: a
-//   second Y would use another item or the same one twice. Only when the hunter did nothing at all is Y pressed again
-//   (a few times). The weapon is away when the +0x114c byte is 0.
-// Given up after a few seconds, or on leaving the quest. Not known yet: with [Actions] Enable=1 the pad's Y reaches the game
-// through the action layer, which may not pass it on; and the byte at +0x114c is checked on a Hammer only (input_view.c).
+// Using an item (companion_use, a touch on the panel), in one touch. Modelled on the RadialMenu Forge plugin, the one way of
+// using an item that has been tried in the game (its v0.1 / v0.2: write the slot, press Y for two polls):
+// - The press goes into the engine's own button word, in a hook on the game's pad poll (0xa6d34c: pad, a1, &id, out; the
+//   hook runs the poll, then ORs the press into out[0]), and is held for a number of POLLS (PRESS_POLLS), never for a time: a
+//   long frame cannot swallow it. If that hook cannot be installed the same press is added to what GetNpadState gives instead
+//   (the poll turns NpadButton bit 3 into 0x8000: the same thing). out and &id can be in main's image, below the heap, so they
+//   are checked with plausible(), not sane().
+// - The slot is written to the hunter's selected item (+0x3298) BEFORE the first press, whatever the weapon: where the game puts
+//   a drawn weapon away and then uses the selected item by itself, it is the right item; where it only puts it away, the second
+//   press (below) uses it.
+//   weapon away: Y.  Sword & Shield out: R+Y (how the game uses an item with that weapon out, from Capcom's manual; RadialMenu does
+//   the same, alternating with plain Y on a retry).  Any other weapon out: Y.
+// - What counts as used. The item's count dropping, always (the slot was selected and Y pressed: that alone is NOT a use). For a
+//   tool, whose count never drops: the hunter was idle at the press and its action changed (weapon away), or, with a Sword &
+//   Shield R+Y, changed with the weapon still out. With another weapon out the hunter's action changing is no sign (it may only be
+//   putting the weapon away): the use is then the count dropping, or, when the weapon is away and the hunter has been idle again
+//   for SHEATHE_DONE_NS with nothing used, the press did no more than put it away: the slot is written again and Y pressed
+//   again. Never a second press while the hunter is still doing the first thing: that would use an item twice.
+// - Idle is the action pair u16 +0x2506 / +0x250a = 1:0 (hle/input_view.c); the weapon is out when the u8 at +0x114c is 1. A press
+//   waits for idle, but only three seconds. "May use an item" is the item bar handler's own test (itembar.c): 0x47bcd0 == 1,
+//   0x47b918 == 0 (bit 3 of the flags byte at +0x13cc; itembar.c and RadialMenu call it "busy") and vfunc +0x230 (player, 1) == 1.
+// The use ends with an explicit result (the JSON's "result"): taken, or why not. Given up after ten seconds, or on leaving the
+// quest. Not known yet (needs the game): that a Y reaches every weapon the same way, R+Y with the Sword & Shield, and with
+// [Actions] Enable=1 the action layer may not pass the injected press on.
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -112,19 +118,20 @@
 #define WEAPON_SNS     1u          // the weapon type (as g_weapons in presence.c) that uses items with the weapon out
 #define ACT_IDLE       ((1u << 16) | 0u)
 #define USE_TOTAL_NS   10000000000ull  // the whole sequence, from the touch
-#define USE_HOLD_NS    100000000ull    // Y held
-#define USE_TAKEN_NS   600000000ull    // how long the game has to show it took a press that was meant to use the item
-#define SHEATHE_WAIT_NS 1200000000ull  // ... that was meant to put the weapon away
+#define FN_PAD_POLL    0xa6d34cu       // the game's pad poll: (pad, a1, &id, out); out[0] is the engine's button word
+#define ENG_Y          0x8000u         // the engine's button word (hle/input_view.c): Y, R
+#define ENG_R          0x0200u
+#define PRESS_POLLS    3               // pad polls a press is held (RadialMenu holds 2: the game takes a press from the polls)
+#define USE_TAKEN_NS   800000000ull    // after a press: how long before "nothing happened" is believed
+#define SHEATHE_DONE_NS 600000000ull   // weapon away and the hunter idle this long, nothing used: it only put the weapon away
 #define IDLE_GRACE_NS  3000000000ull   // how long a press waits for the hunter to be idle (a Y in the middle of a move is lost)
-#define SETTLE_NS      150000000ull    // idle again after the weapon is away: a moment to be sure
-#define AWAY_FORCE_NS  1000000000ull   // ... or this long after it is away, idle or not
 #define USE_TRIES      4
 #define BLOCK_NS       3000000000ull   // how long the game's own "may use an item" test may say no (with the hunter free) before the use is given up
 #define RESULT_OK_NS   1500000000ull   // how long the panel is told a use went through
 #define RESULT_BAD_NS  8000000000ull   // ... and why one did not (long enough to read it and tap again)
 #define PIN_MAX        8               // pinned items: what the first page of the panel holds
-#define SHEATHE_TRIES  3
-#define BTN_Y_BIT      (1ull << 3)     // NpadButton Y (input.h)
+#define BTN_Y_BIT      (1ull << 3)     // NpadButton Y, R (input.h): for the HID fallback
+#define BTN_R_BIT      (1ull << 7)
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_json[16384];
@@ -135,10 +142,11 @@ static int g_use_slot = -1;
 enum { U_WAIT, U_SHEATHE, U_USE };
 static volatile int u_slot = -1;  // (the panel's text is made on the same thread: volatile for the tests' sake)
 static volatile int u_phase;
-static int u_tries, u_sheathes, u_count;
-static bool u_acted, u_after_sheathe;
-static uint32_t u_act_press;
-static uint64_t u_deadline, u_hold_until, u_retry, u_wait_from, u_away_at, u_idle_since, u_blocked_since;
+static int u_tries, u_count, u_press_left, u_polls;
+static bool u_acted, u_after_sheathe, u_press_idle, u_ry, u_label_sheathe;
+static uint32_t u_act_press, u_mask;
+static uint64_t u_deadline, u_retry, u_wait_from, u_idle_since, u_blocked_since;
+static bool g_engine_hook;  // the pad poll is hooked: the use is pressed there, not through GetNpadState
 static volatile int u_wait_for;  // while waiting: 0 for the hunter (idle, the weapon away), 1 for the game's own "may use an item" test
 // How the last use ended, for the panel (in the JSON a while): slot -1 none. why: "taken", "blocked", "ignored", "sheathe", "empty", "timeout".
 static struct { int slot, ok; const char *why; uint64_t until; } u_res = {-1, 0, "", 0};
@@ -258,7 +266,7 @@ static bool use_log(void) { return ENV("MHGU_COMPANION_LOG") != NULL; }
 
 static void use_stop(const char *why) {
     ULOG("slot %d: %s\n", u_slot, why);
-    u_slot = -1;
+    u_slot = -1, u_press_left = 0;
 }
 
 // A use that is over, and how: told to the panel for a while (a failure so the player reads why and can tap again)
@@ -266,89 +274,117 @@ static void use_end(bool ok, const char *why, const char *code) {
     ULOG("slot %d: %s\n", u_slot, why);
     u_res.slot = u_slot, u_res.ok = ok, u_res.why = code;
     u_res.until = plat_now_ns() + (ok ? RESULT_OK_NS : RESULT_BAD_NS);
-    u_slot = -1;
+    u_slot = -1, u_press_left = 0;
 }
 
 static uint32_t hunter_act(uint32_t pl) { return ((uint32_t)LD16(pl + PL_ACT_ST) << 16) | LD16(pl + PL_ACT_NO); }
 
-// Each time the game reads player 1's pad: steps a use that is waiting; returns the buttons to add to the pad (Y).
-uint64_t companion_buttons(Cpu *c) {
+// One step of a use, once for each poll of player 1's pad: returns the engine's buttons to add to this poll (ENG_Y, ENG_R).
+static uint32_t use_step(Cpu *c) {
     uint64_t now = plat_now_ns();
     pthread_mutex_lock(&g_lock);
     int asked = g_use_slot;
     g_use_slot = -1;
     pthread_mutex_unlock(&g_lock);
     if (asked >= 0) {
-        u_slot = asked, u_phase = U_WAIT, u_tries = u_sheathes = 0, u_acted = u_after_sheathe = false;
-        u_deadline = now + USE_TOTAL_NS, u_wait_from = now;
-        u_hold_until = u_retry = u_away_at = u_idle_since = u_blocked_since = 0;
+        u_slot = asked, u_phase = U_WAIT, u_tries = 0, u_acted = u_after_sheathe = u_label_sheathe = false;
+        u_deadline = now + USE_TOTAL_NS, u_wait_from = now, u_press_left = 0;
+        u_retry = u_idle_since = u_blocked_since = 0;
         u_wait_for = 0, u_res.slot = -1;
         ULOG("slot %d asked\n", asked);
     }
-    if (u_slot < 0) return 0;
+    if (u_slot < 0) return u_press_left = 0;
     uint32_t pl = local_player();
     if (!pl) return use_stop("left the quest"), 0;
     if (now >= u_deadline) return use_end(false, "gave up", "timeout"), 0;
     if (call(c, FN_PL_IS_LOCAL, pl, 0, 0) != 1) return use_stop("not our hunter"), 0;
     uint32_t pd = LD32(pl + PL_DATA), act = hunter_act(pl);
     bool drawn = LD8(pl + PL_DRAWN) != 0, sns = sane(pd) && LD32(pd + PD_WEAPON) == WEAPON_SNS;
-    bool idle = act == ACT_IDLE, holding = now < u_hold_until;
+    bool idle = act == ACT_IDLE;
     if (idle) {
         if (!u_idle_since) u_idle_since = now;
     } else u_idle_since = 0;
-    if (u_phase != U_WAIT && act != u_act_press) u_acted = true;  // (the hunter did something since the press)
-
-    if (u_phase == U_USE) {
+    if (u_phase != U_WAIT) {  // a press has been made: what has it done?
+        u_polls++;
+        if (act != u_act_press) u_acted = true;
+        // Selecting the slot and pressing is not using the item: the count dropping is.
         if (pouch_count(u_slot) < u_count) return use_end(true, "taken: its count dropped", "taken"), 0;
-        if (u_acted) {
-            if (!holding) return use_end(true, "taken: the hunter acted", "taken"), 0;
-        } else if (!holding && now >= u_retry) {
-            if (u_tries >= USE_TRIES) return use_end(false, "not taken", "ignored"), 0;
-            u_phase = U_WAIT, u_wait_from = now;
-        }
-    } else if (u_phase == U_SHEATHE) {
-        if (!drawn) {
-            u_phase = U_WAIT, u_after_sheathe = true, u_away_at = now, u_wait_from = now;
-            ULOG("slot %d: weapon away\n", u_slot);
-        } else if (!holding && !u_acted && now >= u_retry) {  // (nothing happened: another Y; if it did, wait for it)
-            if (u_sheathes >= SHEATHE_TRIES) return use_end(false, "the weapon would not go away", "sheathe"), 0;
-            u_phase = U_WAIT, u_wait_from = now;
+        bool settled = now >= u_retry;  // (long enough after the press to believe that nothing happened)
+        if (u_phase == U_USE) {  // the weapon was away: Y should have used the item
+            if (u_acted && u_press_idle) return use_end(true, "taken: the hunter acted", "taken"), 0;  // (a tool's count never drops)
+            if (settled && u_polls >= PRESS_POLLS) {
+                if (u_tries >= USE_TRIES) return use_end(false, "the game did not take it", "ignored"), 0;
+                u_phase = U_WAIT, u_wait_from = now;
+            }
+        } else {  // U_SHEATHE: the weapon was out at the press
+            if (u_ry && u_acted && u_press_idle && drawn) return use_end(true, "taken: R+Y, the hunter acted, weapon still out", "taken"), 0;
+            // idle for a while, nothing used: the press did no more than put the weapon away (or did nothing at all)
+            if (settled && u_polls >= PRESS_POLLS && idle && u_idle_since && now - u_idle_since >= SHEATHE_DONE_NS) {
+                if (u_tries >= USE_TRIES) {
+                    if (drawn) use_end(false, "the weapon would not go away", "sheathe");
+                    else use_end(false, "the item was not used", "ignored");
+                    return 0;
+                }
+                u_after_sheathe = !drawn;  // (nothing was consumed: the slot is written again and Y pressed again)
+                u_phase = U_WAIT, u_wait_from = now;
+                ULOG("slot %d: %s\n", u_slot, drawn ? "nothing happened: again" : "the weapon is away, the item not used: again");
+            }
         }
     }
     if (u_phase == U_WAIT) {
         if (pouch_count(u_slot) <= 0) return use_end(false, "none left", "empty"), 0;
-        bool free_now = idle || now - u_wait_from >= IDLE_GRACE_NS;
-        if (drawn && !sns) {  // the weapon first: Y puts it away when the hunter is idle
-            if (free_now) {
-                u_phase = U_SHEATHE, u_sheathes++, u_acted = false, u_act_press = act;
-                u_hold_until = now + USE_HOLD_NS, u_retry = now + SHEATHE_WAIT_NS;
-                ULOG("slot %d: Y to put the weapon away (%d)\n", u_slot, u_sheathes);
-            }
-        } else {
-            bool settled = !u_after_sheathe || (u_idle_since && now - u_idle_since >= SETTLE_NS) || now - u_away_at >= AWAY_FORCE_NS;
-            bool ready = settled && (u_after_sheathe || free_now);
-            u_wait_for = ready ? 1 : 0;
-            if (ready) {
-                // The game's own "may use an item" test. (The vtable is in main's image, below the heap: it is not sane(), and
-                // asking for that made this test fail for ever: the use sat in "waiting" until it was given up.)
-                uint32_t vt = LD32(pl), can = vt ? LD32(vt + VF_CAN_SELECT) : 0;
-                if (call(c, FN_PL_FLAG3, pl, 0, 0) == 0 && can && call(c, can, pl, 1, 0) == 1) {
-                    u_blocked_since = 0;
-                    ST16(pl + PL_ITEM_SLOT, u_slot);
-                    u_count = pouch_count(u_slot);
-                    u_phase = U_USE, u_tries++, u_acted = false, u_act_press = act;
-                    u_hold_until = now + USE_HOLD_NS, u_retry = now + USE_TAKEN_NS;
-                    ULOG("slot %d: Y to use it (%d)%s\n", u_slot, u_tries, drawn ? ", weapon out" : "");
-                } else if (!u_blocked_since) {
-                    u_blocked_since = now;
-                    ULOG("slot %d: the game says an item can't be used now\n", u_slot);
-                } else if (now - u_blocked_since >= BLOCK_NS) {
-                    return use_end(false, "the game's own test says no", "blocked"), 0;
-                }
+        bool ready = idle || now - u_wait_from >= IDLE_GRACE_NS;  // (a press in the middle of a move is lost)
+        u_wait_for = ready ? 1 : 0;
+        if (ready) {
+            // The game's own "may use an item" test. (The vtable is in main's image, below the heap: it is not sane(), and
+            // asking for that made this test fail for ever: the use sat in "waiting" until it was given up.)
+            uint32_t vt = LD32(pl), can = vt ? LD32(vt + VF_CAN_SELECT) : 0;
+            if (call(c, FN_PL_FLAG3, pl, 0, 0) == 0 && can && call(c, can, pl, 1, 0) == 1) {
+                u_blocked_since = 0;
+                ST16(pl + PL_ITEM_SLOT, u_slot);  // select first, always
+                u_count = pouch_count(u_slot);
+                u_press_idle = idle, u_act_press = act, u_acted = false, u_polls = 0;
+                u_ry = drawn && sns && (u_tries % 2 == 0);  // (a Sword & Shield out: R+Y first, plain Y on the retry)
+                u_mask = ENG_Y | (u_ry ? ENG_R : 0);
+                u_label_sheathe = drawn && !sns;
+                u_phase = drawn ? U_SHEATHE : U_USE, u_tries++;
+                u_retry = now + USE_TAKEN_NS, u_press_left = PRESS_POLLS;
+                ULOG("slot %d: selected, %s pressed (try %d)%s\n", u_slot, u_ry ? "R+Y" : "Y", u_tries, drawn ? ", weapon out" : "");
+            } else if (!u_blocked_since) {
+                u_blocked_since = now;
+                ULOG("slot %d: the game says an item can't be used now\n", u_slot);
+            } else if (now - u_blocked_since >= BLOCK_NS) {
+                return use_end(false, "the game's own test says no", "blocked"), 0;
             }
         }
     }
-    return u_slot >= 0 && u_phase != U_WAIT && now < u_hold_until ? BTN_Y_BIT : 0;
+    if (u_press_left > 0) return u_press_left--, u_mask;
+    return 0;
+}
+
+uint32_t companion_pad_bits(Cpu *c) { return use_step(c); }
+
+// The HID fallback: only when the pad poll could not be hooked (the same press, an earlier way in).
+uint64_t companion_buttons(Cpu *c) {
+    if (g_engine_hook) return 0;
+    uint32_t m = use_step(c);
+    return ((m & ENG_Y) ? BTN_Y_BIT : 0) | ((m & ENG_R) ? BTN_R_BIT : 0);
+}
+
+static bool plausible(uint32_t a) { return a >= 0x00100000u && a < 0xF0000000u && !(a & 3); }  // (main's image too: not sane())
+
+// The hook on the game's pad poll: runs it, then adds the press to the button word it made.
+static void pad_poll(Cpu *c) {
+    uint32_t id_ptr = c->r[2], out = c->r[3];
+    fnhook_call_original(c, FN_PAD_POLL);
+    if (!plausible(out) || !plausible(id_ptr) || LD32(id_ptr) != 0) return;  // (player 1's pad only)
+    uint32_t add = use_step(c);
+    if (add) ST32(out, LD32(out) | add);
+}
+
+void companion_init(void) {
+    g_engine_hook = fnhook_set(FN_PAD_POLL, hle_register("companion:pad_poll", pad_poll));
+    LOG("[companion] item presses: %s\n", g_engine_hook ? "in the game's pad poll (0xa6d34c)" : "through GetNpadState (the pad poll could not be hooked)");
 }
 
 static void put_hunter(Out *o, uint32_t pl, uint32_t pd, bool quest) {
@@ -454,7 +490,7 @@ void companion_tick(Cpu *c) {
         refresh_pins();
         put_pins(&o);
         if (u_slot >= 0) {
-            const char *step = u_phase == U_SHEATHE || (u_phase == U_WAIT && u_after_sheathe) ? "sheathe" : u_phase == U_USE ? "use" : "wait";
+            const char *step = u_phase != U_WAIT ? (u_label_sheathe ? "sheathe" : "use") : u_after_sheathe ? "sheathe" : "wait";
             put(&o, ",\"using\":%d,\"step\":\"%s\"", u_slot, step);  // (waiting for the hunter after the weapon is away is still sheathing)
             if (u_phase == U_WAIT && !u_after_sheathe) put(&o, ",\"waitFor\":\"%s\"", u_wait_for ? "bar" : "hunter");
         }

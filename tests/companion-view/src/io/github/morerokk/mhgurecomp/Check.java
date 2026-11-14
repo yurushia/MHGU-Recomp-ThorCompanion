@@ -294,11 +294,11 @@ public class Check {
         waitForMap("");
         save(draw(), out, "quest-map.png");
         Companion.used.clear();
-        tap(300, 450);  // on the map
-        check(view.zoomed() && Companion.used.isEmpty(), "a tap on the map zooms in and uses nothing");
-        save(draw(), out, "quest-map-zoomed.png");
+        tap(300, 450);  // on the map itself
+        check(view.mapMode() == CompanionView.MODE_WHOLE && !view.zoomed() && Companion.used.isEmpty(), "a tap on the map switches to the whole map (not a zoom) and uses nothing");
+        save(draw(), out, "quest-map-whole.png");
         tap(300, 450);
-        check(!view.zoomed(), "and a second tap zooms out");
+        check(view.mapMode() == CompanionView.MODE_AREA && !view.zoomed(), "and a second tap switches back to this area");
         // in another area there is no archive entry: a radar round the hunter instead
         String q9 = quest(8, "").replace("\"zone\":4", "\"zone\":9");
         fresh(q9);
@@ -349,10 +349,51 @@ public class Check {
         check(view.zoomLevel() == 1, "back to the whole area");
         touch(MotionEvent.ACTION_DOWN, 300, 460, 0); touch(MotionEvent.ACTION_MOVE, 380, 480, 40); touch(MotionEvent.ACTION_UP, 380, 480, 20);
         check(view.zoomLevel() == 1 && Companion.used.isEmpty(), "a drag on the whole-area map is not a tap (it does not zoom)");
-        tap(300, 450);
-        check(view.zoomLevel() == 4 && view.following(), "a tap on the map zooms in on the hunter");
-        tap(300, 450);
-        check(view.zoomLevel() == 1, "and a second tap back out");
+        check(view.mapMode() == CompanionView.MODE_AREA, "a drag is not a tap: the map did not switch");
+        check(Companion.used.isEmpty(), "none of that used an item");
+
+        // ---- THIS AREA | WHOLE MAP: a switch of the map's contents, not a zoom
+        fresh(quest(8, ""));
+        waitForMap("");
+        Companion.used.clear();
+        check(view.mapMode() == CompanionView.MODE_AREA, "the map starts on this area");
+        check(view.markers().contains("H@4") && view.markers().contains("M1@4") && !view.markers().contains("M2@7"),
+              "this area shows the hunter and the monster of its own area only: " + view.markers());
+        for (int k = 1; k <= 6; k++) {
+            tap(170, 381);  // the control
+            boolean whole = k % 2 == 1;
+            check(view.mapMode() == (whole ? CompanionView.MODE_WHOLE : CompanionView.MODE_AREA) && view.zoomLevel() == 1,
+                  "tap " + k + " on the control gives " + (whole ? "the whole map" : "this area") + " (alternating, zoom untouched)");
+            waitForMap("");
+            if (whole) {
+                java.util.List<String> mk = view.markers();
+                check(mk.contains("H@4") && mk.contains("M1@4") && mk.contains("M2@7"),
+                      "the whole map marks the monster in another area (7) as well as the hunter and the one in area 4: " + mk);
+                if (k == 1) save(draw(), out, "quest-whole-map.png");
+            }
+        }
+        // the picture of the whole stage is not the area: a different picture, and nothing of this area's ground in it
+        tap(170, 381);
+        waitForMap("");
+        BufferedImage whole = draw();
+        tap(170, 381);
+        BufferedImage here = draw();
+        int diff = 0;
+        for (int y = 356; y < 556; y += 3) for (int x = 40; x < 636; x += 3) if (whole.getRGB(x, y) != here.getRGB(x, y)) diff++;
+        check(diff > 3000, "the two modes draw different things, not one scaled: " + diff + " samples differ");
+        tap(170, 381);
+        waitForMap("");
+        float zb = 28 + 620 - 12 - 8 - 36 + 18, zb0 = 344 + 12 + 8 + 18;
+        tap(zb, zb0);
+        check(view.zoomLevel() == 2, "zoom still works on the whole map");
+        tap(170, 381);
+        check(view.zoomLevel() == 1 && view.mapMode() == CompanionView.MODE_AREA, "switching resets the zoom");
+        // a stage with no picture says so
+        fresh(quest(8, "").replace("\"stage\":1", "\"stage\":99"));
+        tap(170, 381);
+        waitForMap("");
+        check(view.mapMode() == CompanionView.MODE_WHOLE && view.markers().isEmpty(), "no picture for the stage: no markers made up, got " + view.markers());
+        tap(170, 381);
         check(Companion.used.isEmpty(), "none of that used an item");
 
         // ---- what a tap on an item is doing, and why it did not work, is said in words

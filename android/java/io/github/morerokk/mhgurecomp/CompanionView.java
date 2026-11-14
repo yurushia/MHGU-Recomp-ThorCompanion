@@ -6,8 +6,11 @@
 //
 // The map is the area's ground seen from above (AreaMap.java: read from the player's own game files; nothing of it is kept in
 // the app), with the hunter and the monsters of the hunter's area where runtime/hle/companion.c says they are. Of the pieces of
-// ground the area is made of, the ones something has stood on are drawn light and the rest dark. A touch on the map zooms in on
-// the hunter and back. Without the game's files in a place it can read, a plain radar around the hunter is drawn instead.
+// ground the area is made of, the ones something has stood on are drawn light and the rest dark. A control on the map switches
+// what it shows, between THIS AREA (the hunter's own area, as above) and the WHOLE MAP (every area of the stage, each in a tile of
+// its own and true to its own proportions, with the hunter and every large monster where the game says it is, in its own area); a
+// tap on the control or on the map itself switches, and again switches back. Zooming and dragging work in both. Without the game's
+// files in a place it can read, a plain radar around the hunter is drawn instead.
 //
 // The item pouch is a fixed grid of two rows of four buttons, eight to a page, every button the same size on every page.
 // A tap on a button uses that item at once (Companion.useItem: the reader puts a drawn weapon away first where the
@@ -57,6 +60,10 @@ final class CompanionView extends View {
     private static final long FLING_MS = 350, ANIM_MS = 170;
     // The map: the zoom steps (1 is the whole area), and its three buttons (zoom in, zoom out, back to the hunter)
     private static final float ZOOM_MAX = 16, BTN = 36;
+    // The map's two contents, and the control that switches them (a segmented control: THIS AREA | WHOLE MAP)
+    static final int MODE_AREA = 0, MODE_WHOLE = 1;
+    private static final float TOG_X = MAP_X + 22, TOG_Y = MAP_Y + 20, TOG_W = 240, TOG_H = 34;
+    private static final float PIC = 1024;  // the whole map: the pictures (android/assets/maps) are 1024 pixels square; a pixel is its unit
 
     private static final int GROUND = 0xff26231d, STONE_TOP = 0xffb9b29f, STONE_BOT = 0xffa59d89, LIGHT = 0xffece6d2, EDGE = 0xff7d7665,
             INK = 0xff2b261c, INK_SOFT = 0xff5a5342, CREAM = 0xfff1e8cc, GOLD = 0xfff2c22c, PLATE = 0xff101010, GREEN_TOP = 0xffb8e25c,
@@ -104,6 +111,14 @@ final class CompanionView extends View {
     private float panX, panZ;        // the world point at the middle of the map when it is not following the hunter
     private float mapScale = 1, mapCx, mapCz;  // as last drawn: pixels to a world unit, and the world point at the middle
     private boolean mapLive;         // a drawn area (not the radar) that can be dragged
+    // The whole map: every area of the stage (loaded in the background), the tiles' shapes, and what was drawn on the map last
+    private int mapMode = MODE_AREA;
+    private volatile int stageKey = -1;
+    private volatile android.graphics.Bitmap stagePic;
+    private volatile int stageState;  // 0 loading, 1 ready, 2 none (no picture for this stage)
+    private volatile double[][] stageAreas;  // by area number: the picture pixel its number is at (or null)
+    private final Paint picPaint = new Paint(0);  // (no filtering: the pictures are pixel art)
+    private final java.util.ArrayList<String> markers = new java.util.ArrayList<>();
 
     // The pouch's page, and a swipe or the slide to a page: drag is how far the pages are shifted, in sheet pixels
     private long useWatchSince;      // when the use now shown began (a use that takes too long is said to)
@@ -173,6 +188,24 @@ final class CompanionView extends View {
 
     boolean following() {
         return mapFollow;
+    }
+
+    /** What the map shows now: MODE_AREA or MODE_WHOLE, for the tests. */
+    int mapMode() {
+        return mapMode;
+    }
+
+    /** What was drawn on the map last, one entry each: "H@4" the hunter in area 4, "M2@7" the second monster in area 7,. */
+    java.util.List<String> markers() {
+        return new java.util.ArrayList<>(markers);
+    }
+
+    /** Switches what the map shows (the control, or a tap on the map): the whole map and this area, in turn. */
+    void toggleMapMode() {
+        mapMode = mapMode == MODE_AREA ? MODE_WHOLE : MODE_AREA;
+        mapZoom = 1;
+        mapFollow = true;
+        invalidate();
     }
 
     /** Whether the map is zoomed in on the hunter, for the tests. */
@@ -645,7 +678,8 @@ final class CompanionView extends View {
         c.drawPath(p, mapLine);
     }
 
-    // The map's three buttons, in the panel's top right corner: 0 zoom in, 1 zoom out, 2 back on the hunter
+    // The map's three buttons, in the panel's top right corner: 0 zoom in, 1 zoom out, 2 back on the hunter; and 3, the control
+    // that switches the map's contents, top left
     private static float buttonX() {
         return MAP_X + MAP_W - 12 - 8 - BTN;
     }
@@ -655,16 +689,18 @@ final class CompanionView extends View {
     }
 
     private static int mapButtonAt(float x, float y) {
+        if (x >= TOG_X && x < TOG_X + TOG_W && y >= TOG_Y && y < TOG_Y + TOG_H) return 3;
         for (int i = 0; i < 3; i++)
             if (x >= buttonX() && x < buttonX() + BTN && y >= buttonY(i) && y < buttonY(i) + BTN) return i;
         return -1;
     }
 
     private boolean mapButtonOn(int i, boolean haveHunter) {
-        return i == 0 ? mapLive && mapZoom < ZOOM_MAX : i == 1 ? mapLive && mapZoom > 1.001f : mapLive && haveHunter;
+        return i == 3 || (i == 0 ? mapLive && mapZoom < ZOOM_MAX : i == 1 ? mapLive && mapZoom > 1.001f : mapLive && haveHunter);
     }
 
-    private void mapButtons(Canvas c, boolean haveHunter) {
+    // The map's buttons, the control and a line of words about what it is showing (warn: something is not as it should be)
+    private void mapChrome(Canvas c, boolean haveHunter, String hint, boolean warn) {
         for (int i = 0; i < 3; i++) {
             boolean on = mapButtonOn(i, haveHunter);
             float x = buttonX(), y = buttonY(i);
@@ -687,10 +723,34 @@ final class CompanionView extends View {
                 if (i == 0) c.drawLine(x + BTN / 2, y + 10, x + BTN / 2, y + BTN - 10, stroke);
             }
         }
+        // THIS AREA | WHOLE MAP: the half that is showing is lit; a tap anywhere on the control shows the other
+        rect.set(TOG_X, TOG_Y, TOG_X + TOG_W, TOG_Y + TOG_H);
+        fill.setColor(0xe6161410);
+        c.drawRoundRect(rect, 10, 10, fill);
+        for (int half = 0; half < 2; half++) {
+            boolean lit = half == mapMode;
+            float x0 = TOG_X + half * TOG_W / 2;
+            if (lit) {
+                rect.set(x0 + 3, TOG_Y + 3, x0 + TOG_W / 2 - 3, TOG_Y + TOG_H - 3);
+                fill.setColor(GOLD);
+                c.drawRoundRect(rect, 8, 8, fill);
+            }
+            label(c, half == 0 ? "THIS AREA" : "WHOLE MAP", x0 + TOG_W / 4, TOG_Y + 23, 16, lit ? INK : 0xccffffff, semi, Paint.Align.CENTER, 0.1f, TOG_W / 2 - 8);
+        }
+        rect.set(TOG_X, TOG_Y, TOG_X + TOG_W, TOG_Y + TOG_H);
+        stroke.setColor(alpha(LIGHT, 0.9f));
+        stroke.setStrokeWidth(2);
+        c.drawRoundRect(rect, 10, 10, stroke);
+        label(c, hint, TOG_X + 2, TOG_Y + TOG_H + 22, 17, warn ? 0xffffc94d : 0xb3ffffff, medium, Paint.Align.LEFT, 0.1f, MAP_W - 2 * 40 - 100);
     }
 
     private void map(Canvas c, int stageNo, int zone, JSONObject h, JSONArray mons) {
+        if (mapMode == MODE_WHOLE) {
+            wholeMap(c, stageNo, zone, h, mons);
+            return;
+        }
         stone(c, MAP_X, MAP_Y, MAP_W, MAP_H);
+        markers.clear();
         // the area being shown: read in the background when the hunter's zone changes (or again if the game folder became known)
         int key = zone >= 0 && zone < 100 && stageNo > 0 ? stageNo * 100 + zone : -1;
         if (key != areaKey || (key >= 0 && areaState == 2 && AreaMap.root != areaRoot)) {
@@ -808,8 +868,10 @@ final class CompanionView extends View {
             sx = Math.max(ix + 18, Math.min(ix + iw - 18, sx));
             sy = Math.max(iy + 18, Math.min(iy + ih - 18, sy));
             monsterMarker(c, sx, sy, i + 1, mons.optJSONObject(i), out);
+            markers.add("M" + (i + 1) + "@" + zone);
         }
         if (haveHunter) {
+            markers.add("H@" + zone);
             float sx = cx + (float) (hx - wx) * sc, sy = cy + (float) (hz - wz) * sc;
             boolean out = sx < ix + 12 || sx > ix + iw - 12 || sy < iy + 12 || sy > iy + ih - 12;
             sx = Math.max(ix + 12, Math.min(ix + iw - 12, sx));
@@ -822,8 +884,7 @@ final class CompanionView extends View {
         // what the map is showing, in a few words: the zoom, and anything that is not as it should be
         String hint = areaState == 0 ? "READING THE MAP..." : a == null ? (AreaMap.root == null ? "RADAR: GAME FILES NOT FOUND" : "RADAR: NO MAP DATA FOR THIS AREA")
             : mapZoom > 1.001f ? "X" + Math.round(mapZoom) + (mapFollow ? "  ·  FOLLOWING" : "  ·  DRAG TO MOVE") : "";
-        label(c, hint, ix + 12, iy + 24, 18, a == null && areaState != 0 ? 0xffffc94d : 0xb3ffffff, medium, Paint.Align.LEFT, 0.1f, iw - 70);
-        mapButtons(c, haveHunter);
+        mapChrome(c, haveHunter, hint, a == null && areaState != 0);
         c.restore();
         label(c, zone == 0 ? "CAMP" : zone > 0 ? "AREA " + zone : "", MAP_X + 22, MAP_Y + MAP_H - 20, 24, 0xffffffff, semi,
               Paint.Align.LEFT, 0.1f, 0);
@@ -837,6 +898,132 @@ final class CompanionView extends View {
         }
         label(c, status.toString(), MAP_X + MAP_W - 22, MAP_Y + MAP_H - 20, 19, !haveHunter || noPosition > 0 ? 0xfff9d77a : 0xe6ffffff, semi,
               Paint.Align.RIGHT, 0.08f, MAP_W - 150);
+    }
+
+    // The anchors of a stage's areas on its picture (android/assets/maps/areas.csv: stage,area,cx,cy,...; area 0 is the camp)
+    private static java.util.Map<Integer, double[][]> anchorTable;
+
+    private synchronized double[][] anchorsOf(int stageNo) {
+        if (anchorTable == null) {
+            anchorTable = new java.util.HashMap<>();
+            try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(getContext().getAssets().open("maps/areas.csv"), "UTF-8"))) {
+                String line = r.readLine();
+                while ((line = r.readLine()) != null) {
+                    String[] f = line.split(",");
+                    if (f.length < 4) continue;
+                    int st = Integer.parseInt(f[0].trim()), ar = Integer.parseInt(f[1].trim());
+                    double[][] t = anchorTable.get(st);
+                    if (t == null || t.length <= ar) {
+                        double[][] bigger = new double[Math.max(ar + 1, 16)][];
+                        if (t != null) System.arraycopy(t, 0, bigger, 0, t.length);
+                        anchorTable.put(st, t = bigger);
+                    }
+                    t[ar] = new double[] {Double.parseDouble(f[2]), Double.parseDouble(f[3])};
+                }
+            } catch (Exception ignored) {
+                // no table: the picture is shown without markers
+            }
+        }
+        return anchorTable.get(stageNo);
+    }
+
+    /** The map as the whole stage: its picture, with the hunter and the large monsters each in the area the game says they are in. */
+    private void wholeMap(Canvas c, int stageNo, int zone, JSONObject h, JSONArray mons) {
+        stone(c, MAP_X, MAP_Y, MAP_W, MAP_H);
+        markers.clear();
+        if (stageNo != stageKey) {  // the picture is read in the background when the stage changes
+            stageKey = stageNo;
+            stagePic = null;
+            stageAreas = null;
+            mapZoom = 1;
+            mapFollow = true;
+            stageState = stageNo > 0 ? 0 : 2;
+            if (stageNo > 0) {
+                final int st = stageNo;
+                Thread t = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        android.graphics.Bitmap bmp = null;
+                        try (java.io.InputStream in = getContext().getAssets().open(String.format(Locale.US, "maps/map_%02d.png", st))) {
+                            bmp = android.graphics.BitmapFactory.decodeStream(in);
+                        } catch (Exception ignored) {
+                            // no picture for this stage
+                        }
+                        double[][] an = anchorsOf(st);
+                        if (stageKey != st) return;
+                        stageAreas = an;
+                        stagePic = bmp;
+                        stageState = bmp != null ? 1 : 2;
+                        postInvalidate();
+                    }
+                }, "whole-map");
+                t.setDaemon(true);
+                t.start();
+            }
+        }
+        float ix = MAP_X + 12, iy = MAP_Y + 12, iw = MAP_W - 24, ih = MAP_H - 24;
+        c.save();
+        c.clipRect(ix, iy, ix + iw, iy + ih);
+        fill.setColor(0xffe9e0c4);
+        c.drawRect(ix, iy, ix + iw, iy + ih, fill);
+        android.graphics.Bitmap pic = stagePic;
+        double[][] an = stageAreas;
+        mapLive = pic != null;
+        float cx = ix + iw / 2, cy = iy + ih / 2;
+        float fit = Math.min(iw, ih) / PIC, sc = fit * mapZoom;
+        double wx = PIC / 2, wz = PIC / 2;
+        boolean haveHunter = h != null;
+        double[] hunterAt = haveHunter && an != null && zone >= 0 && zone < an.length ? an[zone] : null;
+        if (mapZoom > 1.001f) {
+            if (mapFollow && hunterAt != null) {
+                wx = hunterAt[0];
+                wz = hunterAt[1];
+            } else {
+                wx = Math.max(0, Math.min(PIC, panX));
+                wz = Math.max(0, Math.min(PIC, panZ));
+            }
+        }
+        if (pic != null) {
+            rect.set(cx - (float) wx * sc, cy - (float) wz * sc, cx - (float) wx * sc + PIC * sc, cy - (float) wz * sc + PIC * sc);
+            c.drawBitmap(pic, null, rect, picPaint);
+        }
+        mapScale = sc;
+        mapCx = (float) wx;
+        mapCz = (float) wz;
+        // who is in which area: the monsters first, the hunter on top; several in one area are set side by side round its number
+        int[] crowd = new int[an != null ? an.length : 0];
+        int n = mons != null ? Math.min(mons.length(), 4) : 0, shown = 0, lost = 0;
+        for (int i = 0; i < n; i++) {
+            JSONObject m = mons.optJSONObject(i);
+            if (m == null || m.optInt("hp") <= 0) continue;
+            int z = m.optInt("zone", zone);
+            if (an == null || z < 0 || z >= an.length || an[z] == null) {
+                lost++;
+                continue;
+            }
+            int k = crowd[z]++;
+            float sx = cx + (float) (an[z][0] - wx) * sc + 26 + 34 * k, sy = cy + (float) (an[z][1] - wz) * sc + 28;
+            if (sx > ix - 20 && sx < ix + iw + 20 && sy > iy - 20 && sy < iy + ih + 20) monsterMarker(c, sx, sy, i + 1, m, false);
+            markers.add("M" + (i + 1) + "@" + z);
+            shown++;
+        }
+        if (hunterAt != null) {
+            float sx = cx + (float) (hunterAt[0] - wx) * sc, sy = cy + (float) (hunterAt[1] - wz) * sc;
+            fill.setColor(0xffffffff);
+            c.drawCircle(sx, sy, 14, fill);
+            fill.setColor(RED);
+            c.drawCircle(sx, sy, 10, fill);
+            markers.add("H@" + zone);
+        }
+        String hint = stageState == 0 ? "LOADING THE MAP..." : pic == null ? "NO WHOLE MAP FOR THIS STAGE"
+            : mapZoom > 1.001f ? "X" + Math.round(mapZoom) + (mapFollow ? "  ·  FOLLOWING" : "  ·  DRAG TO MOVE") : "";
+        mapChrome(c, hunterAt != null, hint, stageState == 2);
+        c.restore();
+        label(c, zone == 0 ? "YOU: CAMP" : zone > 0 ? "YOU: AREA " + zone : "", MAP_X + 22, MAP_Y + MAP_H - 20, 24, 0xff2b261c, semi,
+              Paint.Align.LEFT, 0.1f, 0);
+        String status = pic == null ? "" : hunterAt == null ? (haveHunter ? "YOUR AREA IS NOT MARKED ON THIS MAP" : "NO HUNTER POSITION")
+            : n == 0 ? "NO LARGE MONSTER" : shown + (shown == 1 ? " MONSTER" : " MONSTERS") + " MARKED" + (lost > 0 ? "  ·  " + lost + " NOT PLACED" : "");
+        label(c, status, MAP_X + MAP_W - 22, MAP_Y + MAP_H - 20, 19, 0xff2b261c, semi, Paint.Align.RIGHT, 0.08f, MAP_W - 150);
     }
 
     private void monsterMarker(Canvas c, float x, float y, int number, JSONObject m, boolean out) {
@@ -1227,7 +1414,9 @@ final class CompanionView extends View {
     private void mapButtonPressed(int which) {
         boolean haveHunter = state != null && state.optJSONObject("hunter") != null && state.optJSONObject("hunter").has("x");
         if (!mapButtonOn(which, haveHunter)) return;
-        if (which == 0) {
+        if (which == 3) {
+            toggleMapMode();
+        } else if (which == 0) {
             if (mapZoom <= 1.001f) mapFollow = true;
             mapZoom = Math.min(ZOOM_MAX, mapZoom * 2);
         } else if (which == 1) {
@@ -1288,10 +1477,8 @@ final class CompanionView extends View {
                     boolean still = Math.abs(x - downX) < TAP_SLOP && Math.abs(y - downY) < TAP_SLOP;
                     if (mapButton >= 0) {
                         if (still && mapButtonAt(x, y) == mapButton) mapButtonPressed(mapButton);
-                    } else if (!mapDrag && still) {  // a tap on the map itself: closer on the hunter, or back to the whole area
-                        if (mapZoom > 1.001f) mapZoom = 1;
-                        else mapZoom = 4;
-                        mapFollow = true;
+                    } else if (!mapDrag && still) {  // a tap on the map itself: the other contents (the whole map, or this area)
+                        toggleMapMode();
                     }
                     mapButton = -1;
                     mapDrag = false;
