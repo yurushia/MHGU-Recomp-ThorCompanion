@@ -10,13 +10,14 @@ hunter HP/stamina/sharpness, large-monster HP, a map, and a tappable item pouch.
 |---|---|---|
 | `aa49bd5` | earlier work (item use stuck on Waiting, map, monster positions, pinned items) | yes |
 | `919345c` | tap uses the item (pad-poll injection); THIS AREA / WHOLE MAP toggle | yes, to `master` |
-| `042b156` | pad-poll player id accepted by value or by pointer | **local only, not pushed** |
+| `042b156` | pad-poll player id accepted by value or by pointer | yes |
+| `1dab8ce` | press added after the action layer (`[Actions]`) | yes |
 
 Branch `fix-tap-use-map-toggle` is at `919345c` (already merged into `master`).
 
 ## The two issues and where they stand
 
-### 1. Tapping an item must use it, not just select it: NOT confirmed working in game
+### 1. Tapping an item must use it, not just select it: WORKING in game (confirmed by the user). Mechanism documented in docs/THOR-COMPANION.md, "How the one tap works"
 - Latest report from the user: the panel says "using", the in-game item bar switches to the item, then nothing happens.
   That means the slot write (`player +0x3298`) works and the injected press is not taking effect.
 - Mechanism (`runtime/hle/companion.c`): a hook on the game's pad poll `0xa6d34c` (`pad, a1, id, out`) ORs Y (`0x8000`,

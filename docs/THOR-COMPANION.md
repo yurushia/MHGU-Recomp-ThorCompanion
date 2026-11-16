@@ -106,9 +106,26 @@ comma separated list), and it is back after a restart.
 
 ## How the one tap works (runtime/hle/companion.c)
 
-All on the game's thread, from the pad read (`companion_buttons`): the slot is written to the hunter's selected item
-(`+0x3298`) and **Y is held on the pad for a moment**, which is how the game takes a press. Y with the weapon out
+All on the game's thread. The slot is written to the hunter's selected item (`+0x3298`: the item bar switches to it) and then
+**Y is pressed for a moment** (R+Y for a drawn Sword and Shield), which is how the game takes a press. Y with the weapon out
 puts it away (when the hunter is idle) and with the weapon away uses the selected item.
+
+**How the press gets to the game (this is what made the tap work, confirmed on a device):**
+
+1. **A hook on the game's own pad poll, `0xa6d34c`** (`pad, a1, id, out`; `companion_init` installs it with `fnhook_set`). It runs the
+   original and then ORs the press into the engine's button word `out[0]` (Y `0x8000`, R `0x0200`), one step of the use state machine per
+   poll (`use_step`). This is the same place the RadialMenu Forge plugin presses Y, and it is the only place the engine reads a press
+   from. Pressing through `GetNpadState` (the HID path, `companion_buttons`, kept as a fallback for when the hook cannot be installed)
+   did not reach the hunter: the slot was selected and nothing else happened.
+2. **The player id must be accepted by value as well as by pointer.** The hook only acts on player 1's pad (id 0). The first version
+   read `r2` as a pointer to the id and returned unless it pointed at a zero, so when the game passes the id as a plain number (0)
+   the press was never added: the item bar switched to the item and nothing followed. RadialMenu never dereferences it. The hook now
+   takes `plausible(r2) ? *r2 : r2` (a pad that is not player 1 is left alone). The host test has a case for each form and fails on
+   the old code.
+3. **With `[Actions] Enable=1` the press must be added after the action layer.** The gameplay view's translator
+   (`input_view.c`, `tr_view`) drops the engine bits an action is bound to (Y is "Use item") and rebuilds them from the host's
+   actions, so a Y put into the poll's word never reached the hunter. The hook also keeps the press of the poll just made
+   (`companion_injected()`), and `tr_view` ORs it into the gameplay word it has built (not for the menu and town views).
 
 * **Weapon out**: `player +0x114c` is 1. **Hunter idle**: the action pair `+0x2506` / `+0x250a` is `1:0`
   (`hle/input_view.c`). A press waits for idle, but only three seconds: after that it is made anyway.
@@ -135,8 +152,8 @@ puts it away (when the hunter is idle) and with the weapon away uses the selecte
 second as `[companion] {...}` in `log.txt`: with it a failed tap shows where it stopped (`the game says an item can't be used now`
 is the game's own test saying no: the log then has the reason the panel shows).
 
-**Status: not tested on a device or in a running game.** The offsets are from reading the game's code (main 1.4.0) and
-the port's notes. What the tests below check is the logic, against a model of the hunter and of the touches; what they
+**Status: the one tap uses the item in the running game (confirmed on the AYN Thor with all three points above in place; not
+yet for every weapon).** The offsets are from reading the game's code (main 1.4.0) and the port's notes. What the tests below check is the logic, against a model of the hunter and of the touches; what they
 cannot check is the game: that Y really puts each weapon away, that the weapon byte and the action pair behave as the
 notes say for every weapon (the notes checked a Hammer), and that the second screen's touches reach the panel.
 
