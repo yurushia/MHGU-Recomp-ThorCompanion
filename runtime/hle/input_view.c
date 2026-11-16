@@ -24,6 +24,7 @@
 #include "../config.h"
 #include "../hle.h"
 #include "input.h"
+#include "companion.h"
 #include "input_view.h"
 
 #define FN_MB_UPDATE   0x5de064u  // (button object) cur / prev / trig / rel and the pointer block from the pad's word
@@ -223,6 +224,7 @@ static void tr_view(Cpu *c, int view, int slot, uint32_t fn) {
         }
     }
     uint32_t out = act_view(view, in, active, g_dash_zr);
+    if (view != ACT_VIEW_MB2 && view != ACT_VIEW_TOWN) out |= companion_injected();  // (the companion's item press: not an action, so not rebuilt)
     g_in[slot] = in, g_out[slot] = out;
     c->r[1] = out;
     fnhook_call_next(c, fn);

@@ -17,3 +17,5 @@ void companion_init(void);
 uint32_t companion_pad_bits(Cpu *c);
 // The same press for GetNpadState, used only when the pad poll could not be hooked (otherwise 0): NpadButton bits.
 uint64_t companion_buttons(Cpu *c);
+// The engine buttons the last pad poll had pressed for a use: the action layer adds them to the gameplay word it builds.
+uint32_t companion_injected(void);

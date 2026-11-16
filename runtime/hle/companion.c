@@ -371,6 +371,7 @@ uint64_t companion_buttons(Cpu *c) {
     return ((m & ENG_Y) ? BTN_Y_BIT : 0) | ((m & ENG_R) ? BTN_R_BIT : 0);
 }
 
+static volatile uint32_t g_injected;
 static bool plausible(uint32_t a) { return a >= 0x00100000u && a < 0xF0000000u && !(a & 3); }  // (main's image too: not sane())
 
 // The hook on the game's pad poll: runs it, then adds the press to the button word it made.
@@ -382,8 +383,14 @@ static void pad_poll(Cpu *c) {
     uint32_t id = plausible(id_ptr) ? LD32(id_ptr) : id_ptr;
     if (!plausible(out) || id != 0) return;
     uint32_t add = use_step(c);
+    g_injected = add;
     if (add) ST32(out, LD32(out) | add);
 }
+
+// The press of the poll just made, for the action layer: with [Actions] on, the gameplay view's translator (input_view.c) drops the
+// engine bits an action is bound to (Y: Use item) and rebuilds them from the host's actions, so a Y put into the poll's word
+// never reached the hunter. input_view.c ORs this into the gameplay word it has built.
+uint32_t companion_injected(void) { return g_injected; }
 
 void companion_init(void) {
     g_engine_hook = fnhook_set(FN_PAD_POLL, hle_register("companion:pad_poll", pad_poll));
